@@ -34,6 +34,7 @@ class OutputBufferMemoryManager
 {
     private final long maxBufferedBytes;
     private final AtomicLong bufferedBytes = new AtomicLong();
+    private final AtomicLong peakMemoryUsage = new AtomicLong();
     @GuardedBy("this")
     private SettableFuture<?> notFull;
 
@@ -54,23 +55,23 @@ class OutputBufferMemoryManager
         notFull.set(null);
     }
 
-    public void updateMemoryUsage(long bytesAdded)
+    public synchronized void updateMemoryUsage(long bytesAdded)
     {
-        systemMemoryContextSupplier.get().setBytes(bufferedBytes.addAndGet(bytesAdded));
-        synchronized (this) {
-            if (!isFull() && !notFull.isDone()) {
-                // Complete future in a new thread to avoid making a callback on the caller thread.
-                // This make is easier for callers to use this class since they can update the memory
-                // usage while holding locks.
-                SettableFuture<?> future = this.notFull;
-                notificationExecutor.execute(() -> future.set(null));
-            }
+        long currentBufferedBytes = bufferedBytes.addAndGet(bytesAdded);
+        peakMemoryUsage.accumulateAndGet(currentBufferedBytes, Math::max);
+        systemMemoryContextSupplier.get().setBytes(currentBufferedBytes);
+        if (!isBufferFull() && !notFull.isDone()) {
+            // Complete future in a new thread to avoid making a callback on the caller thread.
+            // This make is easier for callers to use this class since they can update the memory
+            // usage while holding locks.
+            SettableFuture<?> future = this.notFull;
+            notificationExecutor.execute(() -> future.set(null));
         }
     }
 
     public synchronized ListenableFuture<?> getNotFullFuture()
     {
-        if (isFull() && notFull.isDone()) {
+        if (isBufferFull() && notFull.isDone()) {
             notFull = SettableFuture.create();
         }
         return notFull;
@@ -95,8 +96,18 @@ class OutputBufferMemoryManager
         return bufferedBytes.get() / (double) maxBufferedBytes;
     }
 
-    public boolean isFull()
+    public synchronized boolean isOverutilized()
+    {
+        return isBufferFull();
+    }
+
+    private synchronized boolean isBufferFull()
     {
         return bufferedBytes.get() > maxBufferedBytes && blockOnFull.get();
+    }
+
+    public long getPeakMemoryUsage()
+    {
+        return peakMemoryUsage.get();
     }
 }

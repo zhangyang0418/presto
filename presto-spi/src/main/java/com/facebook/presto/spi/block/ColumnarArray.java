@@ -34,11 +34,11 @@ public class ColumnarArray
         }
 
         if (!(block instanceof AbstractArrayBlock)) {
-            throw new IllegalArgumentException("Invalid array block");
+            throw new IllegalArgumentException("Invalid array block: " + block.getClass().getName());
         }
 
         AbstractArrayBlock arrayBlock = (AbstractArrayBlock) block;
-        Block elementsBlock = arrayBlock.getValues();
+        Block elementsBlock = arrayBlock.getRawElementBlock();
 
         // trim elements to just visible region
         int elementsOffset = 0;

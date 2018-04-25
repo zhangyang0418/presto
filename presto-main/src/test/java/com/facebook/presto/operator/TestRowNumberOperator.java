@@ -17,7 +17,6 @@ import com.facebook.presto.RowPagesBuilder;
 import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.gen.JoinCompiler;
 import com.facebook.presto.sql.planner.plan.PlanNodeId;
@@ -31,7 +30,6 @@ import org.testng.annotations.BeforeClass;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
-import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
@@ -377,7 +375,7 @@ public class TestRowNumberOperator
 
     private static Block getRowNumberColumn(List<Page> pages)
     {
-        BlockBuilder builder = BIGINT.createBlockBuilder(new BlockBuilderStatus(), pages.size() * 100);
+        BlockBuilder builder = BIGINT.createBlockBuilder(null, pages.size() * 100);
         for (Page page : pages) {
             int rowNumberChannel = page.getChannelCount() - 1;
             for (int i = 0; i < page.getPositionCount(); i++) {
@@ -391,8 +389,11 @@ public class TestRowNumberOperator
     {
         return input.stream()
                 .map(page -> {
-                    Block[] blocks = Arrays.copyOf(page.getBlocks(), page.getChannelCount() - 1);
-                    return new Page(blocks);
+                    Block[] blocks = new Block[page.getChannelCount() - 1];
+                    for (int i = 0; i < page.getChannelCount() - 1; i++) {
+                        blocks[i] = page.getBlock(i);
+                    }
+                    return new Page(page.getPositionCount(), blocks);
                 })
                 .collect(toImmutableList());
     }

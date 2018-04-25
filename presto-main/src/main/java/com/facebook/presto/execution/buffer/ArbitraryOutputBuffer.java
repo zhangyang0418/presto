@@ -251,6 +251,15 @@ public class ArbitraryOutputBuffer
     }
 
     @Override
+    public void acknowledge(OutputBufferId bufferId, long sequenceId)
+    {
+        checkState(!Thread.holdsLock(this), "Can not acknowledge pages while holding a lock on this");
+        requireNonNull(bufferId, "bufferId is null");
+
+        getBuffer(bufferId).acknowledgePages(sequenceId);
+    }
+
+    @Override
     public void abort(OutputBufferId bufferId)
     {
         checkState(!Thread.holdsLock(this), "Can not abort while holding a lock on this");
@@ -304,6 +313,12 @@ public class ArbitraryOutputBuffer
             memoryManager.setNoBlockOnFull();
             // DO NOT destroy buffers or set no more pages.  The coordinator manages the teardown of failed queries.
         }
+    }
+
+    @Override
+    public long getPeakMemoryUsage()
+    {
+        return memoryManager.getPeakMemoryUsage();
     }
 
     private synchronized ClientBuffer getBuffer(OutputBufferId id)

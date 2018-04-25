@@ -105,7 +105,7 @@ public class BroadcastOutputBuffer
     @Override
     public boolean isOverutilized()
     {
-        return memoryManager.isFull();
+        return memoryManager.isOverutilized();
     }
 
     @Override
@@ -248,6 +248,15 @@ public class BroadcastOutputBuffer
     }
 
     @Override
+    public void acknowledge(OutputBufferId bufferId, long sequenceId)
+    {
+        checkState(!Thread.holdsLock(this), "Can not acknowledge pages while holding a lock on this");
+        requireNonNull(bufferId, "bufferId is null");
+
+        getBuffer(bufferId).acknowledgePages(sequenceId);
+    }
+
+    @Override
     public void abort(OutputBufferId bufferId)
     {
         checkState(!Thread.holdsLock(this), "Can not abort while holding a lock on this");
@@ -294,6 +303,12 @@ public class BroadcastOutputBuffer
             memoryManager.setNoBlockOnFull();
             // DO NOT destroy buffers or set no more pages.  The coordinator manages the teardown of failed queries.
         }
+    }
+
+    @Override
+    public long getPeakMemoryUsage()
+    {
+        return memoryManager.getPeakMemoryUsage();
     }
 
     private synchronized ClientBuffer getBuffer(OutputBufferId id)
@@ -360,7 +375,7 @@ public class BroadcastOutputBuffer
 
     private void checkFlushComplete()
     {
-        if (state.get() != FLUSHING) {
+        if (state.get() != FLUSHING && state.get() != NO_MORE_BUFFERS) {
             return;
         }
 

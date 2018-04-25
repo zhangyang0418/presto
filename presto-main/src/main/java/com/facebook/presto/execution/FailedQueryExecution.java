@@ -18,7 +18,6 @@ import com.facebook.presto.execution.StateMachine.StateChangeListener;
 import com.facebook.presto.memory.VersionedMemoryPoolId;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.spi.QueryId;
-import com.facebook.presto.spi.resourceGroups.QueryType;
 import com.facebook.presto.spi.resourceGroups.ResourceGroupId;
 import com.facebook.presto.sql.planner.Plan;
 import com.facebook.presto.transaction.TransactionManager;
@@ -90,7 +89,7 @@ public class FailedQueryExecution
     }
 
     @Override
-    public long getTotalMemoryReservation()
+    public long getUserMemoryReservation()
     {
         return 0;
     }
@@ -135,12 +134,6 @@ public class FailedQueryExecution
     public void addFinalQueryInfoListener(StateChangeListener<QueryInfo> stateChangeListener)
     {
         executor.execute(() -> stateChangeListener.stateChanged(queryInfo));
-    }
-
-    @Override
-    public Optional<QueryType> getQueryType()
-    {
-        return Optional.empty();
     }
 
     @Override

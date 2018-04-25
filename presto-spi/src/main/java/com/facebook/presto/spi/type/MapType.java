@@ -203,7 +203,6 @@ public class MapType
         }
         else {
             block.writePositionTo(position, blockBuilder);
-            blockBuilder.closeEntry();
         }
     }
 
@@ -219,7 +218,7 @@ public class MapType
         if (!(value instanceof SingleMapBlock)) {
             throw new IllegalArgumentException("Maps must be represented with SingleMapBlock");
         }
-        blockBuilder.writeObject(value).closeEntry();
+        blockBuilder.appendStructure((Block) value);
     }
 
     @Override
@@ -234,7 +233,7 @@ public class MapType
         return "map(" + keyType.getDisplayName() + ", " + valueType.getDisplayName() + ")";
     }
 
-    public MapBlock createBlockFromKeyValue(boolean[] mapIsNull, int[] offsets, Block keyBlock, Block valueBlock)
+    public Block createBlockFromKeyValue(boolean[] mapIsNull, int[] offsets, Block keyBlock, Block valueBlock)
     {
         return MapBlock.fromKeyValueBlock(
                 mapIsNull,

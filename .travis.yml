@@ -73,7 +73,7 @@ script:
   - |
     if [[ -v PRODUCT_TESTS_BASIC_ENVIRONMENT ]]; then
       presto-product-tests/bin/run_on_docker.sh \
-        multinode -x quarantine,big_query,storage_formats,profile_specific_tests,tpcds
+        multinode -x quarantine,big_query,storage_formats,profile_specific_tests,tpcds,cassandra,mysql_connector,postgresql_connector,mysql
     fi
   - |
     if [[ -v PRODUCT_TESTS_SPECIFIC_ENVIRONMENT ]]; then
@@ -99,8 +99,34 @@ script:
         multinode-tls -g smoke,cli,group-by,join,tls
     fi
   - |
+    if [[ -v PRODUCT_TESTS_SPECIFIC_ENVIRONMENT ]]; then
+      presto-product-tests/bin/run_on_docker.sh \
+        singlenode-mysql -g mysql_connector,mysql
+    fi
+  - |
+    if [[ -v PRODUCT_TESTS_SPECIFIC_ENVIRONMENT ]]; then
+      presto-product-tests/bin/run_on_docker.sh \
+        singlenode-postgresql -g postgresql_connector
+    fi
+  - |
+    if [[ -v PRODUCT_TESTS_SPECIFIC_ENVIRONMENT ]]; then
+      presto-product-tests/bin/run_on_docker.sh \
+        singlenode-cassandra -g cassandra
+    fi
+  - |
     if [[ -v HIVE_TESTS ]]; then
-      presto-hive-hadoop2/bin/run_on_docker.sh
+      presto-hive-hadoop2/bin/run_hive_tests.sh
+      if [[ -v HIVE_TESTS_AWS_ACCESS_KEY_ID ]]; then
+        env AWS_ACCESS_KEY_ID=$HIVE_TESTS_AWS_ACCESS_KEY_ID \
+        AWS_SECRET_ACCESS_KEY=$HIVE_TESTS_AWS_SECRET_ACCESS_KEY \
+        S3_BUCKET_ENDPOINT=$S3_TESTS_BUCKET_ENDPOINT \
+        S3_BUCKET=$S3_TESTS_BUCKET \
+        presto-hive-hadoop2/bin/run_hive_s3_tests.sh
+
+        env AWS_ACCESS_KEY_ID=$HIVE_TESTS_AWS_ACCESS_KEY_ID \
+        AWS_SECRET_ACCESS_KEY=$HIVE_TESTS_AWS_SECRET_ACCESS_KEY \
+        ./mvnw -pl presto-hive test -P test-hive-glue
+      fi
     fi
 
 before_cache:

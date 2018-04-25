@@ -316,6 +316,11 @@ public class OperatorContext
 
     public void destroy()
     {
+        // reset memory revocation listener so that OperatorContext doesn't hold any references to Driver instance
+        synchronized (this) {
+            memoryRevocationRequestListener = null;
+        }
+
         operatorMemoryContext.close();
 
         if (operatorMemoryContext.getSystemMemory() != 0) {
@@ -608,13 +613,13 @@ public class OperatorContext
         }
     }
 
-    class DecoratedLocalMemoryContext
+    static class DecoratedLocalMemoryContext
             implements LocalMemoryContext
     {
         private final LocalMemoryContext delegate;
         private final AtomicReference<SettableFuture<?>> memoryFuture;
 
-        public DecoratedLocalMemoryContext(LocalMemoryContext delegate, AtomicReference<SettableFuture<?>> memoryFuture)
+        DecoratedLocalMemoryContext(LocalMemoryContext delegate, AtomicReference<SettableFuture<?>> memoryFuture)
         {
             this.delegate = requireNonNull(delegate, "delegate is null");
             this.memoryFuture = requireNonNull(memoryFuture, "memoryFuture is null");

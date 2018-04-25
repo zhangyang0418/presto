@@ -109,7 +109,7 @@ public class TestExchangeOperator
                 new DataSize(10, MEGABYTE),
                 3,
                 new Duration(1, TimeUnit.MINUTES),
-                new Duration(1, TimeUnit.MINUTES),
+                true,
                 httpClient,
                 scheduler,
                 systemMemoryUsageListener,
@@ -287,7 +287,7 @@ public class TestExchangeOperator
         List<Page> outputPages = new ArrayList<>();
 
         boolean greaterThanZero = false;
-        while (System.nanoTime() < endTime) {
+        while (System.nanoTime() - endTime < 0) {
             if (operator.isFinished()) {
                 break;
             }
@@ -340,7 +340,7 @@ public class TestExchangeOperator
     {
         // wait for finished or until 10 seconds has passed
         long endTime = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-        while (System.nanoTime() < endTime) {
+        while (System.nanoTime() - endTime < 0) {
             assertEquals(operator.needsInput(), false);
             assertNull(operator.getOutput());
             if (operator.isFinished()) {
