@@ -13,12 +13,10 @@
  */
 package com.facebook.presto.sql.planner.plan;
 
+import com.facebook.presto.metadata.FunctionManager;
+import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.sql.planner.SortExpressionContext;
 import com.facebook.presto.sql.planner.Symbol;
-import com.facebook.presto.sql.tree.ComparisonExpression;
-import com.facebook.presto.sql.tree.ComparisonExpressionType;
-import com.facebook.presto.sql.tree.Expression;
-import com.facebook.presto.sql.tree.Join;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
@@ -30,12 +28,19 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.stream.Stream;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static com.facebook.presto.sql.planner.SortExpressionExtractor.extractSortExpression;
+import static com.facebook.presto.sql.planner.plan.JoinNode.DistributionType.PARTITIONED;
+import static com.facebook.presto.sql.planner.plan.JoinNode.DistributionType.REPLICATED;
+import static com.facebook.presto.sql.planner.plan.JoinNode.Type.FULL;
 import static com.facebook.presto.sql.planner.plan.JoinNode.Type.INNER;
+import static com.facebook.presto.sql.planner.plan.JoinNode.Type.LEFT;
+import static com.facebook.presto.sql.planner.plan.JoinNode.Type.RIGHT;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
 @Immutable
@@ -46,14 +51,8 @@ public class JoinNode
     private final PlanNode left;
     private final PlanNode right;
     private final List<EquiJoinClause> criteria;
-    /**
-     * List of output symbols produced by join. Output symbols
-     * must be from either left or right side of join. Symbols
-     * from left join side must precede symbols from right side
-     * of join.
-     */
     private final List<Symbol> outputSymbols;
-    private final Optional<Expression> filter;
+    private final Optional<RowExpression> filter;
     private final Optional<Symbol> leftHashSymbol;
     private final Optional<Symbol> rightHashSymbol;
     private final Optional<DistributionType> distributionType;
@@ -65,7 +64,7 @@ public class JoinNode
             @JsonProperty("right") PlanNode right,
             @JsonProperty("criteria") List<EquiJoinClause> criteria,
             @JsonProperty("outputSymbols") List<Symbol> outputSymbols,
-            @JsonProperty("filter") Optional<Expression> filter,
+            @JsonProperty("filter") Optional<RowExpression> filter,
             @JsonProperty("leftHashSymbol") Optional<Symbol> leftHashSymbol,
             @JsonProperty("rightHashSymbol") Optional<Symbol> rightHashSymbol,
             @JsonProperty("distributionType") Optional<DistributionType> distributionType)
@@ -91,15 +90,82 @@ public class JoinNode
         this.rightHashSymbol = rightHashSymbol;
         this.distributionType = distributionType;
 
-        List<Symbol> inputSymbols = ImmutableList.<Symbol>builder()
+        Set<Symbol> inputSymbols = ImmutableSet.<Symbol>builder()
                 .addAll(left.getOutputSymbols())
                 .addAll(right.getOutputSymbols())
                 .build();
         checkArgument(new HashSet<>(inputSymbols).containsAll(outputSymbols), "Left and right join inputs do not contain all output symbols");
-        checkArgument(!isCrossJoin() || inputSymbols.equals(outputSymbols), "Cross join does not support output symbols pruning or reordering");
+        checkArgument(!isCrossJoin() || inputSymbols.size() == outputSymbols.size(), "Cross join does not support output symbols pruning or reordering");
 
         checkArgument(!(criteria.isEmpty() && leftHashSymbol.isPresent()), "Left hash symbol is only valid in an equijoin");
         checkArgument(!(criteria.isEmpty() && rightHashSymbol.isPresent()), "Right hash symbol is only valid in an equijoin");
+
+        if (distributionType.isPresent()) {
+            // The implementation of full outer join only works if the data is hash partitioned.
+            checkArgument(
+                    !(distributionType.get() == REPLICATED && (type == RIGHT || type == FULL)),
+                    "%s join do not work with %s distribution type",
+                    type,
+                    distributionType.get());
+            // It does not make sense to PARTITION when there is nothing to partition on
+            checkArgument(
+                    !(distributionType.get() == PARTITIONED && criteria.isEmpty() && type != RIGHT && type != FULL),
+                    "Equi criteria are empty, so %s join should not have %s distribution type",
+                    type,
+                    distributionType.get());
+        }
+    }
+
+    public JoinNode flipChildren()
+    {
+        return new JoinNode(
+                getId(),
+                flipType(type),
+                right,
+                left,
+                flipJoinCriteria(criteria),
+                flipOutputSymbols(getOutputSymbols(), left, right),
+                filter,
+                rightHashSymbol,
+                leftHashSymbol,
+                distributionType);
+    }
+
+    private static Type flipType(Type type)
+    {
+        switch (type) {
+            case INNER:
+                return INNER;
+            case FULL:
+                return FULL;
+            case LEFT:
+                return RIGHT;
+            case RIGHT:
+                return LEFT;
+            default:
+                throw new IllegalStateException("No inverse defined for join type: " + type);
+        }
+    }
+
+    private static List<EquiJoinClause> flipJoinCriteria(List<EquiJoinClause> joinCriteria)
+    {
+        return joinCriteria.stream()
+                .map(EquiJoinClause::flip)
+                .collect(toImmutableList());
+    }
+
+    private static List<Symbol> flipOutputSymbols(List<Symbol> outputSymbols, PlanNode left, PlanNode right)
+    {
+        List<Symbol> leftSymbols = outputSymbols.stream()
+                .filter(symbol -> left.getOutputSymbols().contains(symbol))
+                .collect(Collectors.toList());
+        List<Symbol> rightSymbols = outputSymbols.stream()
+                .filter(symbol -> right.getOutputSymbols().contains(symbol))
+                .collect(Collectors.toList());
+        return ImmutableList.<Symbol>builder()
+                .addAll(rightSymbols)
+                .addAll(leftSymbols)
+                .build();
     }
 
     public enum DistributionType
@@ -125,25 +191,6 @@ public class JoinNode
         public String getJoinLabel()
         {
             return joinLabel;
-        }
-
-        public static Type typeConvert(Join.Type joinType)
-        {
-            // Omit SEMI join types because they must be inferred by the planner and not part of the SQL parse tree
-            switch (joinType) {
-                case CROSS:
-                case IMPLICIT:
-                case INNER:
-                    return Type.INNER;
-                case LEFT:
-                    return Type.LEFT;
-                case RIGHT:
-                    return Type.RIGHT;
-                case FULL:
-                    return Type.FULL;
-                default:
-                    throw new UnsupportedOperationException("Unsupported join type: " + joinType);
-            }
         }
     }
 
@@ -172,15 +219,15 @@ public class JoinNode
     }
 
     @JsonProperty("filter")
-    public Optional<Expression> getFilter()
+    public Optional<RowExpression> getFilter()
     {
         return filter;
     }
 
-    public Optional<SortExpressionContext> getSortExpressionContext()
+    public Optional<SortExpressionContext> getSortExpressionContext(FunctionManager functionManager)
     {
         return filter
-                .flatMap(filter -> extractSortExpression(ImmutableSet.copyOf(right.getOutputSymbols()), filter));
+                .flatMap(filter -> extractSortExpression(ImmutableSet.copyOf(right.getOutputSymbols()), filter, functionManager));
     }
 
     @JsonProperty("leftHashSymbol")
@@ -224,13 +271,7 @@ public class JoinNode
     public PlanNode replaceChildren(List<PlanNode> newChildren)
     {
         checkArgument(newChildren.size() == 2, "expected newChildren to contain 2 nodes");
-        PlanNode newLeft = newChildren.get(0);
-        PlanNode newRight = newChildren.get(1);
-        // Reshuffle join output symbols (for cross joins) since order of symbols in child nodes might have changed
-        List<Symbol> newOutputSymbols = Stream.concat(newLeft.getOutputSymbols().stream(), newRight.getOutputSymbols().stream())
-                .filter(outputSymbols::contains)
-                .collect(toImmutableList());
-        return new JoinNode(getId(), type, newLeft, newRight, criteria, newOutputSymbols, filter, leftHashSymbol, rightHashSymbol, distributionType);
+        return new JoinNode(getId(), type, newChildren.get(0), newChildren.get(1), criteria, outputSymbols, filter, leftHashSymbol, rightHashSymbol, distributionType);
     }
 
     public JoinNode withDistributionType(DistributionType distributionType)
@@ -267,9 +308,9 @@ public class JoinNode
             return right;
         }
 
-        public ComparisonExpression toExpression()
+        public EquiJoinClause flip()
         {
-            return new ComparisonExpression(ComparisonExpressionType.EQUAL, left.toSymbolReference(), right.toSymbolReference());
+            return new EquiJoinClause(right, left);
         }
 
         @Override
@@ -293,6 +334,12 @@ public class JoinNode
         public int hashCode()
         {
             return Objects.hash(left, right);
+        }
+
+        @Override
+        public String toString()
+        {
+            return format("%s = %s", left, right);
         }
     }
 }

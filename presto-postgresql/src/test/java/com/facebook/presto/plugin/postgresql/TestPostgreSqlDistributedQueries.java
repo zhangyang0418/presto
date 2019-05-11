@@ -13,7 +13,7 @@
  */
 package com.facebook.presto.plugin.postgresql;
 
-import com.facebook.presto.tests.AbstractTestQueries;
+import com.facebook.presto.tests.AbstractTestDistributedQueries;
 import io.airlift.testing.postgresql.TestingPostgreSqlServer;
 import io.airlift.tpch.TpchTable;
 import org.testng.annotations.AfterClass;
@@ -25,7 +25,7 @@ import static com.facebook.presto.plugin.postgresql.PostgreSqlQueryRunner.create
 
 @Test
 public class TestPostgreSqlDistributedQueries
-        extends AbstractTestQueries
+        extends AbstractTestDistributedQueries
 {
     private final TestingPostgreSqlServer postgreSqlServer;
 
@@ -41,6 +41,12 @@ public class TestPostgreSqlDistributedQueries
         this.postgreSqlServer = postgreSqlServer;
     }
 
+    @Override
+    protected boolean supportsViews()
+    {
+        return false;
+    }
+
     @AfterClass(alwaysRun = true)
     public final void destroy()
             throws IOException
@@ -49,12 +55,17 @@ public class TestPostgreSqlDistributedQueries
     }
 
     @Override
-    public void testLargeIn()
+    public void testInsert()
     {
-        // the PostgreSQL query fails with "stack depth limit exceeded"
-        // TODO: fix QueryBuilder not to generate such a large query
-        // https://github.com/prestodb/presto/issues/5752
+        // no op -- test not supported due to lack of support for array types.  See
+        // TestPostgreSqlIntegrationSmokeTest for insertion tests.
     }
 
-    // PostgreSQL specific tests should normally go in TestPostgreSqlDistributedQueries
+    @Override
+    public void testDelete()
+    {
+        // Delete is currently unsupported
+    }
+
+    // PostgreSQL specific tests should normally go in TestPostgreSqlIntegrationSmokeTest
 }

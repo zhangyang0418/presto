@@ -32,11 +32,9 @@ public interface SplitSource
 
     ConnectorTransactionHandle getTransactionHandle();
 
-    @Deprecated
-    // TODO: remove
-    ListenableFuture<List<Split>> getNextBatch(int maxSize);
-
     ListenableFuture<SplitBatch> getNextBatch(ConnectorPartitionHandle partitionHandle, Lifespan lifespan, int maxSize);
+
+    void rewind(ConnectorPartitionHandle partitionHandle);
 
     @Override
     void close();

@@ -13,17 +13,25 @@
  */
 package com.facebook.presto.cost;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import java.util.Objects;
+import java.util.function.Function;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
+import static java.lang.Double.NEGATIVE_INFINITY;
 import static java.lang.Double.NaN;
+import static java.lang.Double.POSITIVE_INFINITY;
+import static java.lang.Double.isInfinite;
 import static java.lang.Double.isNaN;
 import static java.lang.String.format;
 
 public class SymbolStatsEstimate
 {
-    public static final SymbolStatsEstimate UNKNOWN_STATS = SymbolStatsEstimate.builder().build();
+    private static final SymbolStatsEstimate UNKNOWN = new SymbolStatsEstimate(NEGATIVE_INFINITY, POSITIVE_INFINITY, NaN, NaN, NaN);
+    private static final SymbolStatsEstimate ZERO = new SymbolStatsEstimate(NaN, NaN, 1.0, 0.0, 0.0);
 
     // for now we support only types which map to real domain naturally and keep low/high value as double in stats.
     private final double lowValue;
@@ -32,7 +40,23 @@ public class SymbolStatsEstimate
     private final double averageRowSize;
     private final double distinctValuesCount;
 
-    public SymbolStatsEstimate(double lowValue, double highValue, double nullsFraction, double averageRowSize, double distinctValuesCount)
+    public static SymbolStatsEstimate unknown()
+    {
+        return UNKNOWN;
+    }
+
+    public static SymbolStatsEstimate zero()
+    {
+        return ZERO;
+    }
+
+    @JsonCreator
+    public SymbolStatsEstimate(
+            @JsonProperty("lowValue") double lowValue,
+            @JsonProperty("highValue") double highValue,
+            @JsonProperty("nullsFraction") double nullsFraction,
+            @JsonProperty("averageRowSize") double averageRowSize,
+            @JsonProperty("distinctValuesCount") double distinctValuesCount)
     {
         checkArgument(
                 lowValue <= highValue || (isNaN(lowValue) && isNaN(highValue)),
@@ -46,8 +70,8 @@ public class SymbolStatsEstimate
                 (0 <= nullsFraction && nullsFraction <= 1.) || isNaN(nullsFraction),
                 "Nulls fraction should be within [0, 1] or NaN, got: %s",
                 nullsFraction);
-        // TODO normalize nullsFraction for an empty range (or validate it is already normalized)
-        this.nullsFraction = nullsFraction;
+        boolean isEmptyRange = isNaN(lowValue) && isNaN(highValue);
+        this.nullsFraction = isEmptyRange ? 1.0 : nullsFraction;
 
         checkArgument(averageRowSize >= 0 || isNaN(averageRowSize), "Average row size should be non-negative or NaN, got: %s", averageRowSize);
         this.averageRowSize = averageRowSize;
@@ -57,27 +81,27 @@ public class SymbolStatsEstimate
         this.distinctValuesCount = distinctValuesCount;
     }
 
+    @JsonProperty
     public double getLowValue()
     {
         return lowValue;
     }
 
+    @JsonProperty
     public double getHighValue()
     {
         return highValue;
     }
 
-    public boolean isRangeEmpty()
-    {
-        return isNaN(lowValue) && isNaN(highValue);
-    }
-
+    @JsonProperty
     public double getNullsFraction()
     {
-        if (isRangeEmpty()) {
-            return 1.0;
-        }
         return nullsFraction;
+    }
+
+    public StatisticRange statisticRange()
+    {
+        return new StatisticRange(lowValue, highValue, distinctValuesCount);
     }
 
     public double getValuesFraction()
@@ -85,14 +109,38 @@ public class SymbolStatsEstimate
         return 1.0 - nullsFraction;
     }
 
+    @JsonProperty
     public double getAverageRowSize()
     {
         return averageRowSize;
     }
 
+    @JsonProperty
     public double getDistinctValuesCount()
     {
         return distinctValuesCount;
+    }
+
+    public SymbolStatsEstimate mapNullsFraction(Function<Double, Double> mappingFunction)
+    {
+        return buildFrom(this).setNullsFraction(mappingFunction.apply(nullsFraction)).build();
+    }
+
+    public SymbolStatsEstimate mapDistinctValuesCount(Function<Double, Double> mappingFunction)
+    {
+        return buildFrom(this).setDistinctValuesCount(mappingFunction.apply(distinctValuesCount)).build();
+    }
+
+    public boolean isUnknown()
+    {
+        return this.equals(UNKNOWN);
+    }
+
+    public boolean isSingleValue()
+    {
+        return distinctValuesCount == 1.0
+                && Double.compare(lowValue, highValue) == 0
+                && !isInfinite(lowValue);
     }
 
     @Override
@@ -105,11 +153,11 @@ public class SymbolStatsEstimate
             return false;
         }
         SymbolStatsEstimate that = (SymbolStatsEstimate) o;
-        return Double.compare(that.nullsFraction, nullsFraction) == 0 &&
-                Double.compare(that.averageRowSize, averageRowSize) == 0 &&
-                Double.compare(that.distinctValuesCount, distinctValuesCount) == 0 &&
-                Objects.equals(lowValue, that.lowValue) &&
-                Objects.equals(highValue, that.highValue);
+        return Double.compare(nullsFraction, that.nullsFraction) == 0 &&
+                Double.compare(averageRowSize, that.averageRowSize) == 0 &&
+                Double.compare(distinctValuesCount, that.distinctValuesCount) == 0 &&
+                Double.compare(lowValue, that.lowValue) == 0 &&
+                Double.compare(highValue, that.highValue) == 0;
     }
 
     @Override
@@ -151,6 +199,13 @@ public class SymbolStatsEstimate
         private double nullsFraction = NaN;
         private double averageRowSize = NaN;
         private double distinctValuesCount = NaN;
+
+        public Builder setStatisticsRange(StatisticRange range)
+        {
+            return setLowValue(range.getLow())
+                    .setHighValue(range.getHigh())
+                    .setDistinctValuesCount(range.getDistinctValuesCount());
+        }
 
         public Builder setLowValue(double lowValue)
         {

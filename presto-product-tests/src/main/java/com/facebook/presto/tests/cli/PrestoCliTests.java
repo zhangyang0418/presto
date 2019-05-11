@@ -29,7 +29,9 @@ import org.testng.annotations.Test;
 import java.io.IOException;
 import java.util.List;
 
+import static com.facebook.presto.tests.TestGroups.AUTHORIZATION;
 import static com.facebook.presto.tests.TestGroups.CLI;
+import static com.facebook.presto.tests.TestGroups.PROFILE_SPECIFIC_TESTS;
 import static com.google.common.base.MoreObjects.firstNonNull;
 import static io.prestodb.tempto.fulfillment.table.hive.tpch.TpchTableDefinitions.NATION;
 import static io.prestodb.tempto.process.CliProcess.trimLines;
@@ -211,14 +213,14 @@ public class PrestoCliTests
 
         presto.getProcessInput().println("show session;");
         assertThat(squeezeLines(presto.readLinesUntilPrompt()))
-                .contains("distributed_join|true|true|boolean|Use a distributed join instead of a broadcast join");
+                .contains("join_distribution_type|PARTITIONED|PARTITIONED|varchar|The join method to use. Options are BROADCAST,PARTITIONED,AUTOMATIC");
 
-        presto.getProcessInput().println("set session distributed_join = false;");
+        presto.getProcessInput().println("set session join_distribution_type = 'BROADCAST';");
         assertThat(presto.readLinesUntilPrompt()).contains("SET SESSION");
 
         presto.getProcessInput().println("show session;");
         assertThat(squeezeLines(presto.readLinesUntilPrompt()))
-                .contains("distributed_join|false|true|boolean|Use a distributed join instead of a broadcast join");
+                .contains("join_distribution_type|BROADCAST|PARTITIONED|varchar|The join method to use. Options are BROADCAST,PARTITIONED,AUTOMATIC");
     }
 
     @Test(groups = CLI, timeOut = TIMEOUT)
@@ -277,6 +279,30 @@ public class PrestoCliTests
         assertThat(trimLines(presto.readLinesUntilPrompt())).contains("txn_test1", "txn_test2");
     }
 
+    @Test(groups = {AUTHORIZATION, PROFILE_SPECIFIC_TESTS}, timeOut = TIMEOUT)
+    public void testSetRole()
+            throws IOException
+    {
+        launchPrestoCliWithServerArgument();
+        presto.waitForPrompt();
+
+        presto.getProcessInput().println("use hive.default;");
+        assertThat(presto.readLinesUntilPrompt()).contains("USE");
+
+        presto.getProcessInput().println("show current roles;");
+        assertThat(trimLines(presto.readLinesUntilPrompt())).contains("public");
+
+        presto.getProcessInput().println("set role admin;");
+        assertThat(trimLines(presto.readLinesUntilPrompt())).contains("SET ROLE");
+        presto.getProcessInput().println("show current roles;");
+        assertThat(trimLines(presto.readLinesUntilPrompt())).contains("public", "admin");
+
+        presto.getProcessInput().println("set role none;");
+        assertThat(trimLines(presto.readLinesUntilPrompt())).contains("SET ROLE");
+        presto.getProcessInput().println("show current roles;");
+        assertThat(trimLines(presto.readLinesUntilPrompt())).doesNotContain("admin");
+    }
+
     private void launchPrestoCliWithServerArgument(String... arguments)
             throws IOException
     {
@@ -298,7 +324,6 @@ public class PrestoCliTests
             requireNonNull(kerberosServiceName, "databases.presto.cli_kerberos_service_name is null");
             requireNonNull(kerberosConfigPath, "databases.presto.cli_kerberos_config_path is null");
 
-            prestoClientOptions.add("--enable-authentication");
             prestoClientOptions.add("--krb5-principal", kerberosPrincipal);
             prestoClientOptions.add("--krb5-keytab-path", kerberosKeytab);
             prestoClientOptions.add("--krb5-remote-service-name", kerberosServiceName);

@@ -77,8 +77,9 @@ public class TestCanonicalize
                 ImmutableList.of(
                         new UnaliasSymbolReferences(),
                         new IterativeOptimizer(
-                                new StatsRecorder(),
+                                new RuleStatsRecorder(),
                                 getQueryRunner().getStatsCalculator(),
+                                getQueryRunner().getCostCalculator(),
                                 ImmutableSet.of(new RemoveRedundantIdentityProjections()))));
     }
 }

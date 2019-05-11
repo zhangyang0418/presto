@@ -64,6 +64,7 @@ public final class Transport
         Socket socket = new Socket(proxy);
         try {
             socket.connect(new InetSocketAddress(address.getHost(), address.getPort()), timeoutMillis);
+            socket.setSoTimeout(timeoutMillis);
 
             if (sslContext.isPresent()) {
                 // SSL will connect to the SOCKS address when present
@@ -87,7 +88,7 @@ public final class Transport
 
     private static TTransportException rewriteException(TTransportException e, HostAndPort address)
     {
-        return new TTransportException(e.getType(), String.format("%s: %s", address, e.getMessage()), e.getCause());
+        return new TTransportException(e.getType(), String.format("%s: %s", address, e.getMessage()), e);
     }
 
     private static class TTransportWrapper

@@ -13,7 +13,7 @@
  */
 package com.facebook.presto.hive;
 
-import com.facebook.presto.hive.HiveBucketing.HiveBucket;
+import com.facebook.presto.hive.HiveBucketing.HiveBucketFilter;
 import com.facebook.presto.hive.metastore.Column;
 import com.facebook.presto.hive.metastore.Partition;
 import com.facebook.presto.hive.metastore.SemiTransactionalHiveMetastore;
@@ -66,7 +66,6 @@ import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.collect.Iterables.concat;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.collect.Iterables.transform;
-import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.lang.Math.min;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
@@ -179,8 +178,7 @@ public class HiveSplitManager
             return new FixedSplitSource(ImmutableList.of());
         }
 
-        // get buckets from first partition (arbitrary)
-        List<HiveBucket> buckets = partition.getBuckets();
+        Optional<HiveBucketFilter> bucketFilter = layout.getBucketFilter();
 
         // validate bucket bucketed execution
         Optional<HiveBucketHandle> bucketHandle = layout.getBucketHandle();
@@ -188,16 +186,24 @@ public class HiveSplitManager
             throw new PrestoException(GENERIC_INTERNAL_ERROR, "SchedulingPolicy is bucketed, but BucketHandle is not present");
         }
 
+        if (bucketHandle.isPresent()) {
+            if (bucketHandle.get().getReadBucketCount() > bucketHandle.get().getTableBucketCount()) {
+                throw new PrestoException(
+                        GENERIC_INTERNAL_ERROR,
+                        "readBucketCount (%s) is greater than the tableBucketCount (%s) which generally points to an issue in plan generation");
+            }
+        }
+
         // sort partitions
         partitions = Ordering.natural().onResultOf(HivePartition::getPartitionId).reverse().sortedCopy(partitions);
 
-        Iterable<HivePartitionMetadata> hivePartitions = getPartitionMetadata(metastore, table, tableName, partitions, bucketHandle.map(HiveBucketHandle::toBucketProperty));
+        Iterable<HivePartitionMetadata> hivePartitions = getPartitionMetadata(metastore, table, tableName, partitions, bucketHandle.map(HiveBucketHandle::toTableBucketProperty), session);
 
         HiveSplitLoader hiveSplitLoader = new BackgroundHiveSplitLoader(
                 table,
                 hivePartitions,
                 layout.getCompactEffectivePredicate(),
-                createBucketSplitInfo(bucketHandle, buckets),
+                createBucketSplitInfo(bucketHandle, bucketFilter),
                 session,
                 hdfsEnvironment,
                 namenodeStats,
@@ -229,7 +235,7 @@ public class HiveSplitManager
                         layout.getCompactEffectivePredicate(),
                         maxInitialSplits,
                         maxOutstandingSplits,
-                        new DataSize(32, MEGABYTE),
+                        maxOutstandingSplitsSize,
                         hiveSplitLoader,
                         executor,
                         new CounterStat());
@@ -249,7 +255,7 @@ public class HiveSplitManager
         return highMemorySplitSourceCounter;
     }
 
-    private Iterable<HivePartitionMetadata> getPartitionMetadata(SemiTransactionalHiveMetastore metastore, Table table, SchemaTableName tableName, List<HivePartition> hivePartitions, Optional<HiveBucketProperty> bucketProperty)
+    private Iterable<HivePartitionMetadata> getPartitionMetadata(SemiTransactionalHiveMetastore metastore, Table table, SchemaTableName tableName, List<HivePartition> hivePartitions, Optional<HiveBucketProperty> bucketProperty, ConnectorSession session)
     {
         if (hivePartitions.isEmpty()) {
             return ImmutableList.of();
@@ -289,7 +295,7 @@ public class HiveSplitManager
                 String partName = makePartName(table.getPartitionColumns(), partition.getValues());
 
                 // verify partition is online
-                verifyOnline(tableName, Optional.of(partName), getProtectMode(partition), table.getParameters());
+                verifyOnline(tableName, Optional.of(partName), getProtectMode(partition), partition.getParameters());
 
                 // verify partition is not marked as non-readable
                 String partitionNotReadable = partition.getParameters().get(OBJECT_NOT_READABLE);
@@ -337,15 +343,19 @@ public class HiveSplitManager
                                 hivePartition.getTableName(),
                                 hivePartition.getPartitionId()));
                     }
-                    if (!bucketProperty.equals(partitionBucketProperty)) {
+                    int tableBucketCount = bucketProperty.get().getBucketCount();
+                    int partitionBucketCount = partitionBucketProperty.get().getBucketCount();
+                    List<String> tableBucketColumns = bucketProperty.get().getBucketedBy();
+                    List<String> partitionBucketColumns = partitionBucketProperty.get().getBucketedBy();
+                    if (!tableBucketColumns.equals(partitionBucketColumns) || !isBucketCountCompatible(tableBucketCount, partitionBucketCount)) {
                         throw new PrestoException(HIVE_PARTITION_SCHEMA_MISMATCH, format(
-                                "Hive table (%s) bucketing (columns=%s, buckets=%s) does not match partition (%s) bucketing (columns=%s, buckets=%s)",
+                                "Hive table (%s) bucketing (columns=%s, buckets=%s) is not compatible with partition (%s) bucketing (columns=%s, buckets=%s)",
                                 hivePartition.getTableName(),
-                                bucketProperty.get().getBucketedBy(),
-                                bucketProperty.get().getBucketCount(),
+                                tableBucketColumns,
+                                tableBucketCount,
                                 hivePartition.getPartitionId(),
-                                partitionBucketProperty.get().getBucketedBy(),
-                                partitionBucketProperty.get().getBucketCount()));
+                                partitionBucketColumns,
+                                partitionBucketCount));
                     }
                 }
 
@@ -355,6 +365,22 @@ public class HiveSplitManager
             return results.build();
         });
         return concat(partitionBatches);
+    }
+
+    static boolean isBucketCountCompatible(int tableBucketCount, int partitionBucketCount)
+    {
+        checkArgument(tableBucketCount > 0 && partitionBucketCount > 0);
+        int larger = Math.max(tableBucketCount, partitionBucketCount);
+        int smaller = Math.min(tableBucketCount, partitionBucketCount);
+        if (larger % smaller != 0) {
+            // must be evenly divisible
+            return false;
+        }
+        if (Integer.bitCount(larger / smaller) != 1) {
+            // ratio must be power of two
+            return false;
+        }
+        return true;
     }
 
     /**

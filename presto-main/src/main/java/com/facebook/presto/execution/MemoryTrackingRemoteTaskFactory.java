@@ -13,15 +13,17 @@
  */
 package com.facebook.presto.execution;
 
-import com.facebook.presto.OutputBuffers;
 import com.facebook.presto.Session;
 import com.facebook.presto.execution.NodeTaskMap.PartitionedSplitCountTracker;
 import com.facebook.presto.execution.StateMachine.StateChangeListener;
+import com.facebook.presto.execution.buffer.OutputBuffers;
+import com.facebook.presto.metadata.InternalNode;
 import com.facebook.presto.metadata.Split;
-import com.facebook.presto.spi.Node;
 import com.facebook.presto.sql.planner.PlanFragment;
 import com.facebook.presto.sql.planner.plan.PlanNodeId;
 import com.google.common.collect.Multimap;
+
+import java.util.OptionalInt;
 
 import static java.util.Objects.requireNonNull;
 
@@ -40,9 +42,10 @@ public class MemoryTrackingRemoteTaskFactory
     @Override
     public RemoteTask createRemoteTask(Session session,
             TaskId taskId,
-            Node node,
+            InternalNode node,
             PlanFragment fragment,
             Multimap<PlanNodeId, Split> initialSplits,
+            OptionalInt totalPartitions,
             OutputBuffers outputBuffers,
             PartitionedSplitCountTracker partitionedSplitCountTracker,
             boolean summarizeTaskInfo)
@@ -52,6 +55,7 @@ public class MemoryTrackingRemoteTaskFactory
                 node,
                 fragment,
                 initialSplits,
+                totalPartitions,
                 outputBuffers,
                 partitionedSplitCountTracker,
                 summarizeTaskInfo);
@@ -64,6 +68,8 @@ public class MemoryTrackingRemoteTaskFactory
             implements StateChangeListener<TaskStatus>
     {
         private final QueryStateMachine stateMachine;
+        private long previousUserMemory;
+        private long previousSystemMemory;
 
         public UpdatePeakMemory(QueryStateMachine stateMachine)
         {
@@ -75,7 +81,12 @@ public class MemoryTrackingRemoteTaskFactory
         {
             long currentUserMemory = newStatus.getMemoryReservation().toBytes();
             long currentSystemMemory = newStatus.getSystemMemoryReservation().toBytes();
-            stateMachine.updateMemoryUsage(currentUserMemory, currentSystemMemory);
+            long currentTotalMemory = currentUserMemory + currentSystemMemory;
+            long deltaUserMemoryInBytes = currentUserMemory - previousUserMemory;
+            long deltaTotalMemoryInBytes = currentTotalMemory - (previousUserMemory + previousSystemMemory);
+            previousUserMemory = currentUserMemory;
+            previousSystemMemory = currentSystemMemory;
+            stateMachine.updateMemoryUsage(deltaUserMemoryInBytes, deltaTotalMemoryInBytes, currentUserMemory, currentTotalMemory);
         }
     }
 }

@@ -14,7 +14,9 @@
 package com.facebook.presto.sql.planner;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.execution.warnings.WarningCollector;
 import com.facebook.presto.testing.LocalQueryRunner;
+import com.facebook.presto.tpch.ColumnNaming;
 import com.facebook.presto.tpch.TpchConnectorFactory;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Resources;
@@ -45,6 +47,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.IntStream;
 
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
+import static com.facebook.presto.tpch.TpchConnectorFactory.TPCH_COLUMN_NAMING_PROPERTY;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
 @SuppressWarnings("MethodMayBeStatic")
@@ -82,7 +85,7 @@ public class BenchmarkPlanner
                     .build();
 
             queryRunner = new LocalQueryRunner(session);
-            queryRunner.createCatalog(tpch, new TpchConnectorFactory(4), ImmutableMap.of("tpch.column-naming", "standard"));
+            queryRunner.createCatalog(tpch, new TpchConnectorFactory(4), ImmutableMap.of(TPCH_COLUMN_NAMING_PROPERTY, ColumnNaming.STANDARD.name()));
 
             queries = IntStream.rangeClosed(1, 22)
                     .boxed()
@@ -116,7 +119,7 @@ public class BenchmarkPlanner
         return benchmarkData.queryRunner.inTransaction(transactionSession -> {
             LogicalPlanner.Stage stage = LogicalPlanner.Stage.valueOf(benchmarkData.stage.toUpperCase());
             return benchmarkData.queries.stream()
-                    .map(query -> benchmarkData.queryRunner.createPlan(transactionSession, query, stage))
+                    .map(query -> benchmarkData.queryRunner.createPlan(transactionSession, query, stage, false, WarningCollector.NOOP))
                     .collect(toImmutableList());
         });
     }

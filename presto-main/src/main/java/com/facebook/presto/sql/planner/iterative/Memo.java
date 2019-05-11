@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.sql.planner.iterative;
 
+import com.facebook.presto.cost.PlanCostEstimate;
 import com.facebook.presto.cost.PlanNodeStatsEstimate;
 import com.facebook.presto.sql.planner.PlanNodeIdAllocator;
 import com.facebook.presto.sql.planner.plan.PlanNode;
@@ -129,17 +130,18 @@ public class Memo
         incrementReferenceCounts(node, group);
         getGroup(group).membership = node;
         decrementReferenceCounts(old, group);
-        evictStatistics(group);
+        evictStatisticsAndCost(group);
 
         return node;
     }
 
-    private void evictStatistics(int group)
+    private void evictStatisticsAndCost(int group)
     {
         getGroup(group).stats = null;
+        getGroup(group).cost = null;
         for (int parentGroup : getGroup(group).incomingReferences.elementSet()) {
             if (parentGroup != ROOT_GROUP_REF) {
-                evictStatistics(parentGroup);
+                evictStatisticsAndCost(parentGroup);
             }
         }
     }
@@ -153,9 +155,19 @@ public class Memo
     {
         Group group = getGroup(groupId);
         if (group.stats != null) {
-            evictStatistics(groupId);
+            evictStatisticsAndCost(groupId); // cost is derived from stats, also needs eviction
         }
         group.stats = requireNonNull(stats, "stats is null");
+    }
+
+    public Optional<PlanCostEstimate> getCost(int group)
+    {
+        return Optional.ofNullable(getGroup(group).cost);
+    }
+
+    public void storeCost(int group, PlanCostEstimate cost)
+    {
+        getGroup(group).cost = requireNonNull(cost, "cost is null");
     }
 
     private void incrementReferenceCounts(PlanNode fromNode, int fromGroup)
@@ -240,9 +252,11 @@ public class Memo
         }
 
         private PlanNode membership;
-        private Multiset<Integer> incomingReferences = HashMultiset.create();
+        private final Multiset<Integer> incomingReferences = HashMultiset.create();
         @Nullable
         private PlanNodeStatsEstimate stats;
+        @Nullable
+        private PlanCostEstimate cost;
 
         private Group(PlanNode member)
         {

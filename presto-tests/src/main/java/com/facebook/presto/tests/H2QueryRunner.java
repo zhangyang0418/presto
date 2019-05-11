@@ -43,13 +43,16 @@ import org.joda.time.DateTimeZone;
 import java.io.Closeable;
 import java.math.BigDecimal;
 import java.math.MathContext;
+import java.sql.Array;
 import java.sql.Date;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Time;
-import java.sql.Timestamp;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 import static com.facebook.presto.spi.type.BigintType.BIGINT;
@@ -77,6 +80,8 @@ import static com.google.common.collect.Lists.newArrayList;
 import static io.airlift.tpch.TpchTable.LINE_ITEM;
 import static io.airlift.tpch.TpchTable.NATION;
 import static io.airlift.tpch.TpchTable.ORDERS;
+import static io.airlift.tpch.TpchTable.PART;
+import static io.airlift.tpch.TpchTable.PART_SUPPLIER;
 import static io.airlift.tpch.TpchTable.REGION;
 import static java.lang.String.format;
 import static java.util.Collections.nCopies;
@@ -126,6 +131,16 @@ public class H2QueryRunner
                 ")");
         insertRows(tpchMetadata, LINE_ITEM);
 
+        handle.execute(" CREATE TABLE partsupp (\n" +
+                "  partkey BIGINT NOT NULL,\n" +
+                "  suppkey BIGINT NOT NULL,\n" +
+                "  availqty INTEGER NOT NULL,\n" +
+                "  supplycost DOUBLE NOT NULL,\n" +
+                "  comment VARCHAR(199) NOT NULL,\n" +
+                "  PRIMARY KEY(partkey, suppkey)" +
+                ")");
+        insertRows(tpchMetadata, PART_SUPPLIER);
+
         handle.execute("CREATE TABLE nation (\n" +
                 "  nationkey BIGINT PRIMARY KEY,\n" +
                 "  name VARCHAR(25) NOT NULL,\n" +
@@ -140,6 +155,19 @@ public class H2QueryRunner
                 "  comment VARCHAR(115) NOT NULL\n" +
                 ")");
         insertRows(tpchMetadata, REGION);
+
+        handle.execute("CREATE TABLE part(\n" +
+                "  partkey BIGINT PRIMARY KEY,\n" +
+                "  name VARCHAR(55) NOT NULL,\n" +
+                "  mfgr VARCHAR(25) NOT NULL,\n" +
+                "  brand VARCHAR(10) NOT NULL,\n" +
+                "  type VARCHAR(25) NOT NULL,\n" +
+                "  size INTEGER NOT NULL,\n" +
+                "  container VARCHAR(10) NOT NULL,\n" +
+                "  retailprice DOUBLE NOT NULL,\n" +
+                "  comment VARCHAR(23) NOT NULL\n" +
+                ")");
+        insertRows(tpchMetadata, PART);
     }
 
     private void insertRows(TpchMetadata tpchMetadata, TpchTable tpchTable)
@@ -176,7 +204,7 @@ public class H2QueryRunner
                     throws SQLException
             {
                 int count = resultSet.getMetaData().getColumnCount();
-                checkArgument(types.size() == count, "type does not match result");
+                checkArgument(types.size() == count, "expected types count (%s) does not match actual column count (%s)", types.size(), count);
                 List<Object> row = new ArrayList<>(count);
                 for (int i = 1; i <= count; i++) {
                     Type type = types.get(i - 1);
@@ -262,33 +290,49 @@ public class H2QueryRunner
                         }
                     }
                     else if (DATE.equals(type)) {
-                        Date dateValue = resultSet.getDate(i);
+                        // resultSet.getDate(i) doesn't work if JVM's zone skipped day being retrieved (e.g. 2011-12-30 and Pacific/Apia zone)
+                        LocalDate dateValue = resultSet.getObject(i, LocalDate.class);
                         if (resultSet.wasNull()) {
                             row.add(null);
                         }
                         else {
-                            row.add(dateValue.toLocalDate());
+                            row.add(dateValue);
                         }
                     }
                     else if (TIME.equals(type)) {
-                        Time timeValue = resultSet.getTime(i);
+                        // resultSet.getTime(i) doesn't work if JVM's zone had forward offset change during 1970-01-01 (e.g. America/Hermosillo zone)
+                        LocalTime timeValue = resultSet.getObject(i, LocalTime.class);
                         if (resultSet.wasNull()) {
                             row.add(null);
                         }
                         else {
-                            row.add(timeValue.toLocalTime());
+                            row.add(timeValue);
                         }
                     }
                     else if (TIME_WITH_TIME_ZONE.equals(type)) {
                         throw new UnsupportedOperationException("H2 does not support TIME WITH TIME ZONE");
                     }
                     else if (TIMESTAMP.equals(type)) {
-                        Timestamp timestampValue = resultSet.getTimestamp(i);
+                        // resultSet.getTimestamp(i) doesn't work if JVM's zone had forward offset at the date/time being retrieved
+                        LocalDateTime timestampValue;
+                        try {
+                            timestampValue = resultSet.getObject(i, LocalDateTime.class);
+                        }
+                        catch (SQLException first) {
+                            // H2 cannot convert DATE to LocalDateTime in their JDBC driver (even though it can convert to java.sql.Timestamp), we need to do this manually
+                            try {
+                                timestampValue = Optional.ofNullable(resultSet.getObject(i, LocalDate.class)).map(LocalDate::atStartOfDay).orElse(null);
+                            }
+                            catch (RuntimeException e) {
+                                first.addSuppressed(e);
+                                throw first;
+                            }
+                        }
                         if (resultSet.wasNull()) {
                             row.add(null);
                         }
                         else {
-                            row.add(timestampValue.toLocalDateTime());
+                            row.add(timestampValue);
                         }
                     }
                     else if (TIMESTAMP_WITH_TIME_ZONE.equals(type)) {
@@ -314,12 +358,12 @@ public class H2QueryRunner
                         }
                     }
                     else if (type instanceof ArrayType) {
-                        Object[] arrayValue = (Object[]) resultSet.getArray(i).getArray();
+                        Array array = resultSet.getArray(i);
                         if (resultSet.wasNull()) {
                             row.add(null);
                         }
                         else {
-                            row.add(newArrayList(arrayValue));
+                            row.add(newArrayList((Object[]) array.getArray()));
                         }
                     }
                     else {

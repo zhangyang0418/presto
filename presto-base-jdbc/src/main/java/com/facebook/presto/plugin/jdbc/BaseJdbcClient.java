@@ -13,13 +13,17 @@
  */
 package com.facebook.presto.plugin.jdbc;
 
+import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
+import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorSplitSource;
 import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.FixedSplitSource;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.TableNotFoundException;
+import com.facebook.presto.spi.predicate.TupleDomain;
+import com.facebook.presto.spi.statistics.TableStatistics;
 import com.facebook.presto.spi.type.CharType;
 import com.facebook.presto.spi.type.DecimalType;
 import com.facebook.presto.spi.type.Type;
@@ -68,6 +72,7 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static java.lang.String.format;
+import static java.sql.ResultSetMetaData.columnNullable;
 import static java.util.Collections.nCopies;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
@@ -190,7 +195,7 @@ public class BaseJdbcClient
     }
 
     @Override
-    public List<JdbcColumnHandle> getColumns(JdbcTableHandle tableHandle)
+    public List<JdbcColumnHandle> getColumns(ConnectorSession session, JdbcTableHandle tableHandle)
     {
         try (Connection connection = connectionFactory.openConnection()) {
             try (ResultSet resultSet = getColumns(tableHandle, connection.getMetaData())) {
@@ -200,11 +205,12 @@ public class BaseJdbcClient
                             resultSet.getInt("DATA_TYPE"),
                             resultSet.getInt("COLUMN_SIZE"),
                             resultSet.getInt("DECIMAL_DIGITS"));
-                    Optional<ReadMapping> columnMapping = toPrestoType(typeHandle);
+                    Optional<ReadMapping> columnMapping = toPrestoType(session, typeHandle);
                     // skip unsupported column types
                     if (columnMapping.isPresent()) {
                         String columnName = resultSet.getString("COLUMN_NAME");
-                        columns.add(new JdbcColumnHandle(connectorId, columnName, typeHandle, columnMapping.get().getType()));
+                        boolean nullable = columnNullable == resultSet.getInt("NULLABLE");
+                        columns.add(new JdbcColumnHandle(connectorId, columnName, typeHandle, columnMapping.get().getType(), nullable));
                     }
                 }
                 if (columns.isEmpty()) {
@@ -220,7 +226,7 @@ public class BaseJdbcClient
     }
 
     @Override
-    public Optional<ReadMapping> toPrestoType(JdbcTypeHandle typeHandle)
+    public Optional<ReadMapping> toPrestoType(ConnectorSession session, JdbcTypeHandle typeHandle)
     {
         return jdbcTypeToPrestoType(typeHandle);
     }
@@ -234,7 +240,8 @@ public class BaseJdbcClient
                 tableHandle.getCatalogName(),
                 tableHandle.getSchemaName(),
                 tableHandle.getTableName(),
-                layoutHandle.getTupleDomain());
+                layoutHandle.getTupleDomain(),
+                Optional.empty());
         return new FixedSplitSource(ImmutableList.of(jdbcSplit));
     }
 
@@ -264,7 +271,19 @@ public class BaseJdbcClient
                 split.getSchemaName(),
                 split.getTableName(),
                 columnHandles,
-                split.getTupleDomain());
+                split.getTupleDomain(),
+                split.getAdditionalPredicate());
+    }
+
+    @Override
+    public void createTable(ConnectorTableMetadata tableMetadata)
+    {
+        try {
+            createTable(tableMetadata, tableMetadata.getTable().getTableName());
+        }
+        catch (SQLException e) {
+            throw new PrestoException(JDBC_ERROR, e);
+        }
     }
 
     @Override
@@ -281,6 +300,17 @@ public class BaseJdbcClient
 
     private JdbcOutputTableHandle beginWriteTable(ConnectorTableMetadata tableMetadata)
     {
+        try {
+            return createTable(tableMetadata, generateTemporaryTableName());
+        }
+        catch (SQLException e) {
+            throw new PrestoException(JDBC_ERROR, e);
+        }
+    }
+
+    protected JdbcOutputTableHandle createTable(ConnectorTableMetadata tableMetadata, String tableName)
+            throws SQLException
+    {
         SchemaTableName schemaTableName = tableMetadata.getTable();
         String schema = schemaTableName.getSchemaName();
         String table = schemaTableName.getTableName();
@@ -294,13 +324,13 @@ public class BaseJdbcClient
             if (uppercase) {
                 schema = schema.toUpperCase(ENGLISH);
                 table = table.toUpperCase(ENGLISH);
+                tableName = tableName.toUpperCase(ENGLISH);
             }
             String catalog = connection.getCatalog();
 
-            String temporaryName = "tmp_presto_" + UUID.randomUUID().toString().replace("-", "");
             StringBuilder sql = new StringBuilder()
                     .append("CREATE TABLE ")
-                    .append(quoted(catalog, schema, temporaryName))
+                    .append(quoted(catalog, schema, tableName))
                     .append(" (");
             ImmutableList.Builder<String> columnNames = ImmutableList.builder();
             ImmutableList.Builder<Type> columnTypes = ImmutableList.builder();
@@ -312,11 +342,7 @@ public class BaseJdbcClient
                 }
                 columnNames.add(columnName);
                 columnTypes.add(column.getType());
-                columnList.add(new StringBuilder()
-                        .append(quoted(columnName))
-                        .append(" ")
-                        .append(toSqlType(column.getType()))
-                        .toString());
+                columnList.add(getColumnString(column, columnName));
             }
             Joiner.on(", ").appendTo(sql, columnList.build());
             sql.append(")");
@@ -330,24 +356,61 @@ public class BaseJdbcClient
                     table,
                     columnNames.build(),
                     columnTypes.build(),
-                    temporaryName);
+                    tableName);
         }
-        catch (SQLException e) {
-            throw new PrestoException(JDBC_ERROR, e);
+    }
+
+    private String getColumnString(ColumnMetadata column, String columnName)
+    {
+        StringBuilder sb = new StringBuilder()
+                .append(quoted(columnName))
+                .append(" ")
+                .append(toSqlType(column.getType()));
+        if (!column.isNullable()) {
+            sb.append(" NOT NULL");
         }
+        return sb.toString();
+    }
+
+    protected String generateTemporaryTableName()
+    {
+        return "tmp_presto_" + UUID.randomUUID().toString().replace("-", "");
     }
 
     @Override
     public void commitCreateTable(JdbcOutputTableHandle handle)
     {
-        StringBuilder sql = new StringBuilder()
-                .append("ALTER TABLE ")
-                .append(quoted(handle.getCatalogName(), handle.getSchemaName(), handle.getTemporaryTableName()))
-                .append(" RENAME TO ")
-                .append(quoted(handle.getCatalogName(), handle.getSchemaName(), handle.getTableName()));
+        renameTable(
+                handle.getCatalogName(),
+                new SchemaTableName(handle.getSchemaName(), handle.getTemporaryTableName()),
+                new SchemaTableName(handle.getSchemaName(), handle.getTableName()));
+    }
 
-        try (Connection connection = getConnection(handle)) {
-            execute(connection, sql.toString());
+    @Override
+    public void renameTable(JdbcTableHandle handle, SchemaTableName newTable)
+    {
+        renameTable(handle.getCatalogName(), handle.getSchemaTableName(), newTable);
+    }
+
+    protected void renameTable(String catalogName, SchemaTableName oldTable, SchemaTableName newTable)
+    {
+        try (Connection connection = connectionFactory.openConnection()) {
+            DatabaseMetaData metadata = connection.getMetaData();
+            String schemaName = oldTable.getSchemaName();
+            String tableName = oldTable.getTableName();
+            String newSchemaName = newTable.getSchemaName();
+            String newTableName = newTable.getTableName();
+            if (metadata.storesUpperCaseIdentifiers()) {
+                schemaName = schemaName.toUpperCase(ENGLISH);
+                tableName = tableName.toUpperCase(ENGLISH);
+                newSchemaName = newSchemaName.toUpperCase(ENGLISH);
+                newTableName = newTableName.toUpperCase(ENGLISH);
+            }
+            String sql = format(
+                    "ALTER TABLE %s RENAME TO %s",
+                    quoted(catalogName, schemaName, tableName),
+                    quoted(catalogName, newSchemaName, newTableName));
+            execute(connection, sql);
         }
         catch (SQLException e) {
             throw new PrestoException(JDBC_ERROR, e);
@@ -374,6 +437,65 @@ public class BaseJdbcClient
         }
         catch (SQLException e) {
             log.warn(e, "Failed to cleanup temporary table: %s", temporaryTable);
+        }
+    }
+
+    @Override
+    public void addColumn(JdbcTableHandle handle, ColumnMetadata column)
+    {
+        try (Connection connection = connectionFactory.openConnection()) {
+            String schema = handle.getSchemaName();
+            String table = handle.getTableName();
+            String columnName = column.getName();
+            DatabaseMetaData metadata = connection.getMetaData();
+            if (metadata.storesUpperCaseIdentifiers()) {
+                schema = schema != null ? schema.toUpperCase(ENGLISH) : null;
+                table = table.toUpperCase(ENGLISH);
+                columnName = columnName.toUpperCase(ENGLISH);
+            }
+            String sql = format(
+                    "ALTER TABLE %s ADD %s",
+                    quoted(handle.getCatalogName(), schema, table),
+                    getColumnString(column, columnName));
+            execute(connection, sql);
+        }
+        catch (SQLException e) {
+            throw new PrestoException(JDBC_ERROR, e);
+        }
+    }
+
+    @Override
+    public void renameColumn(JdbcTableHandle handle, JdbcColumnHandle jdbcColumn, String newColumnName)
+    {
+        try (Connection connection = connectionFactory.openConnection()) {
+            DatabaseMetaData metadata = connection.getMetaData();
+            if (metadata.storesUpperCaseIdentifiers()) {
+                newColumnName = newColumnName.toUpperCase(ENGLISH);
+            }
+            String sql = format(
+                    "ALTER TABLE %s RENAME COLUMN %s TO %s",
+                    quoted(handle.getCatalogName(), handle.getSchemaName(), handle.getTableName()),
+                    jdbcColumn.getColumnName(),
+                    newColumnName);
+            execute(connection, sql);
+        }
+        catch (SQLException e) {
+            throw new PrestoException(JDBC_ERROR, e);
+        }
+    }
+
+    @Override
+    public void dropColumn(JdbcTableHandle handle, JdbcColumnHandle column)
+    {
+        try (Connection connection = connectionFactory.openConnection()) {
+            String sql = format(
+                    "ALTER TABLE %s DROP COLUMN %s",
+                    quoted(handle.getCatalogName(), handle.getSchemaName(), handle.getTableName()),
+                    column.getColumnName());
+            execute(connection, sql);
+        }
+        catch (SQLException e) {
+            throw new PrestoException(JDBC_ERROR, e);
         }
     }
 
@@ -446,6 +568,12 @@ public class BaseJdbcClient
         return new SchemaTableName(
                 resultSet.getString("TABLE_SCHEM").toLowerCase(ENGLISH),
                 resultSet.getString("TABLE_NAME").toLowerCase(ENGLISH));
+    }
+
+    @Override
+    public TableStatistics getTableStatistics(ConnectorSession session, JdbcTableHandle handle, TupleDomain<ColumnHandle> tupleDomain)
+    {
+        return TableStatistics.empty();
     }
 
     protected void execute(Connection connection, String query)

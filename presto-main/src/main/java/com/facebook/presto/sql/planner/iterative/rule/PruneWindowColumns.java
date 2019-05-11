@@ -15,7 +15,7 @@ package com.facebook.presto.sql.planner.iterative.rule;
 
 import com.facebook.presto.sql.planner.PlanNodeIdAllocator;
 import com.facebook.presto.sql.planner.Symbol;
-import com.facebook.presto.sql.planner.SymbolsExtractor;
+import com.facebook.presto.sql.planner.optimizations.WindowNodeUtil;
 import com.facebook.presto.sql.planner.plan.PlanNode;
 import com.facebook.presto.sql.planner.plan.WindowNode;
 import com.google.common.collect.ImmutableSet;
@@ -51,13 +51,16 @@ public class PruneWindowColumns
                 .addAll(windowNode.getSource().getOutputSymbols().stream()
                         .filter(referencedOutputs::contains)
                         .iterator())
-                .addAll(windowNode.getPartitionBy())
-                .addAll(windowNode.getOrderBy());
+                .addAll(windowNode.getPartitionBy());
 
+        windowNode.getOrderingScheme().ifPresent(
+                orderingScheme -> orderingScheme
+                        .getOrderBy()
+                        .forEach(referencedInputs::add));
         windowNode.getHashSymbol().ifPresent(referencedInputs::add);
 
         for (WindowNode.Function windowFunction : referencedFunctions.values()) {
-            referencedInputs.addAll(SymbolsExtractor.extractUnique(windowFunction.getFunctionCall()));
+            referencedInputs.addAll(WindowNodeUtil.extractWindowFunctionUnique(windowFunction));
             windowFunction.getFrame().getStartValue().ifPresent(referencedInputs::add);
             windowFunction.getFrame().getEndValue().ifPresent(referencedInputs::add);
         }

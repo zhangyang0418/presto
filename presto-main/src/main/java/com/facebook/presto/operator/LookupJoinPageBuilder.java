@@ -29,7 +29,7 @@ import static java.util.Objects.requireNonNull;
 /**
  * This page builder creates pages with dictionary blocks:
  * normal dictionary blocks for the probe side and the original blocks for the build side.
- *
+ * <p>
  * TODO use dictionary blocks (probably extended kind) to avoid data copying for build side
  */
 public class LookupJoinPageBuilder
@@ -145,7 +145,9 @@ public class LookupJoinPageBuilder
         verify(previousPosition <= position);
         isSequentialProbeIndices &= position == previousPosition + 1 || previousPosition == -1;
 
+        // Update probe indices and size
         probeIndexBuilder.add(position);
+        estimatedProbeBlockBytes += Integer.BYTES;
 
         // Update memory usage for probe side.
         //

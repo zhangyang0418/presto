@@ -35,6 +35,7 @@ import static com.facebook.presto.split.MockSplitSource.Action.DO_NOTHING;
 import static com.facebook.presto.split.MockSplitSource.Action.FINISH;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 
 @NotThreadSafe
 public class MockSplitSource
@@ -42,6 +43,7 @@ public class MockSplitSource
 {
     private static final Split SPLIT = new Split(new ConnectorId("test"), new ConnectorTransactionHandle() {}, new MockConnectorSplit());
     private static final SettableFuture<List<Split>> COMPLETED_FUTURE = SettableFuture.create();
+
     static {
         COMPLETED_FUTURE.set(null);
     }
@@ -94,17 +96,6 @@ public class MockSplitSource
         throw new UnsupportedOperationException();
     }
 
-    @Override
-    public ListenableFuture<List<Split>> getNextBatch(int maxSize)
-    {
-        checkState(nextBatchFuture.isDone(), "concurrent getNextBatch invocation");
-        nextBatchFuture = SettableFuture.create();
-        nextBatchMaxSize = maxSize;
-        nextBatchInvocationCount++;
-        doGetNextBatch();
-        return nextBatchFuture;
-    }
-
     private void doGetNextBatch()
     {
         checkState(splitsProduced <= totalSplits);
@@ -136,7 +127,20 @@ public class MockSplitSource
             throw new UnsupportedOperationException();
         }
         checkArgument(Lifespan.taskWide().equals(lifespan));
-        return Futures.transform(getNextBatch(maxSize), splits -> new SplitBatch(splits, isFinished()));
+
+        checkState(nextBatchFuture.isDone(), "concurrent getNextBatch invocation");
+        nextBatchFuture = SettableFuture.create();
+        nextBatchMaxSize = maxSize;
+        nextBatchInvocationCount++;
+        doGetNextBatch();
+
+        return Futures.transform(nextBatchFuture, splits -> new SplitBatch(splits, isFinished()), directExecutor());
+    }
+
+    @Override
+    public void rewind(ConnectorPartitionHandle partitionHandle)
+    {
+        throw new UnsupportedOperationException("rewind is not supported in MockSplitSource");
     }
 
     @Override

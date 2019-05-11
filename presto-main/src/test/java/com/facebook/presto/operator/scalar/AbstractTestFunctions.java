@@ -19,6 +19,7 @@ import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.SqlFunction;
 import com.facebook.presto.metadata.SqlScalarFunction;
 import com.facebook.presto.spi.ErrorCodeSupplier;
+import com.facebook.presto.spi.Plugin;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.StandardErrorCode;
 import com.facebook.presto.spi.function.OperatorType;
@@ -39,8 +40,8 @@ import java.util.List;
 import java.util.Map;
 
 import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
-import static com.facebook.presto.SystemSessionProperties.PARSE_DECIMAL_LITERALS_AS_DOUBLE;
-import static com.facebook.presto.metadata.FunctionRegistry.mangleOperatorName;
+import static com.facebook.presto.metadata.FunctionExtractor.extractFunctions;
+import static com.facebook.presto.metadata.OperatorSignatureUtils.mangleOperatorName;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.facebook.presto.spi.type.DecimalType.createDecimalType;
@@ -55,7 +56,6 @@ public abstract class AbstractTestFunctions
     protected final Session session;
     private final FeaturesConfig config;
     protected FunctionAssertions functionAssertions;
-    protected FunctionAssertions decimalLiteralAsDecimal; // TODO remove when DECIMAL is default for literal
 
     protected AbstractTestFunctions()
     {
@@ -75,22 +75,19 @@ public abstract class AbstractTestFunctions
     protected AbstractTestFunctions(Session session, FeaturesConfig config)
     {
         this.session = requireNonNull(session, "session is null");
-        this.config = requireNonNull(config, "config is null");
+        this.config = requireNonNull(config, "config is null").setLegacyLogFunction(true);
     }
 
     @BeforeClass
     public final void initTestFunctions()
     {
         functionAssertions = new FunctionAssertions(session, config);
-        decimalLiteralAsDecimal = new FunctionAssertions(
-                Session.builder(session).setSystemProperty(PARSE_DECIMAL_LITERALS_AS_DOUBLE, "false").build(),
-                config);
     }
 
     @AfterClass(alwaysRun = true)
     public final void destroyTestFunctions()
     {
-        closeAllRuntimeException(functionAssertions, decimalLiteralAsDecimal);
+        closeAllRuntimeException(functionAssertions);
         functionAssertions = null;
     }
 
@@ -106,7 +103,7 @@ public abstract class AbstractTestFunctions
 
     protected void assertDecimalFunction(String statement, SqlDecimal expectedResult)
     {
-        decimalLiteralAsDecimal.assertFunction(
+        assertFunction(
                 statement,
                 createDecimalType(expectedResult.getPrecision(), expectedResult.getScale()),
                 expectedResult);
@@ -190,7 +187,7 @@ public abstract class AbstractTestFunctions
     protected void registerScalarFunction(SqlScalarFunction sqlScalarFunction)
     {
         Metadata metadata = functionAssertions.getMetadata();
-        metadata.getFunctionRegistry().addFunctions(ImmutableList.of(sqlScalarFunction));
+        metadata.getFunctionManager().addFunctions(ImmutableList.of(sqlScalarFunction));
     }
 
     protected void registerScalar(Class<?> clazz)
@@ -199,7 +196,7 @@ public abstract class AbstractTestFunctions
         List<SqlFunction> functions = new FunctionListBuilder()
                 .scalars(clazz)
                 .getFunctions();
-        metadata.getFunctionRegistry().addFunctions(functions);
+        metadata.getFunctionManager().addFunctions(functions);
     }
 
     protected void registerParametricScalar(Class<?> clazz)
@@ -208,7 +205,19 @@ public abstract class AbstractTestFunctions
         List<SqlFunction> functions = new FunctionListBuilder()
                 .scalar(clazz)
                 .getFunctions();
-        metadata.getFunctionRegistry().addFunctions(functions);
+        metadata.getFunctionManager().addFunctions(functions);
+    }
+
+    protected void registerFunctions(Plugin plugin)
+    {
+        functionAssertions.getMetadata().addFunctions(extractFunctions(plugin.getFunctions()));
+    }
+
+    protected void registerTypes(Plugin plugin)
+    {
+        for (Type type : plugin.getTypes()) {
+            functionAssertions.getTypeRegistry().addType(type);
+        }
     }
 
     protected static SqlDecimal decimal(String decimalString)

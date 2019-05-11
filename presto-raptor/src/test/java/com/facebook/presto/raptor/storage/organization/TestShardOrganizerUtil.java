@@ -59,6 +59,7 @@ import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
 import static org.testng.Assert.assertEquals;
 
+@Test(singleThreaded = true)
 public class TestShardOrganizerUtil
 {
     private static final List<ColumnInfo> COLUMNS = ImmutableList.of(
@@ -104,12 +105,12 @@ public class TestShardOrganizerUtil
 
         SchemaTableName tableName = new SchemaTableName("default", "test");
         metadata.createTable(SESSION, tableMetadataBuilder(tableName)
-                .column("orderkey", BIGINT)
-                .column("orderdate", DATE)
-                .column("orderstatus", createVarcharType(3))
-                .property("ordering", ImmutableList.of("orderstatus", "orderkey"))
-                .property("temporal_column", "orderdate")
-                .build(),
+                        .column("orderkey", BIGINT)
+                        .column("orderdate", DATE)
+                        .column("orderstatus", createVarcharType(3))
+                        .property("ordering", ImmutableList.of("orderstatus", "orderkey"))
+                        .property("temporal_column", "orderdate")
+                        .build(),
                 false);
         Table tableInfo = metadataDao.getTableInformation(tableName.getSchemaName(), tableName.getTableName());
         List<TableColumn> tableColumns = metadataDao.listTableColumns(tableInfo.getTableId());

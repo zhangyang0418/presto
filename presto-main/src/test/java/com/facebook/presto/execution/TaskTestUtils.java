@@ -13,12 +13,12 @@
  */
 package com.facebook.presto.execution;
 
-import com.facebook.presto.OutputBuffers;
-import com.facebook.presto.ScheduledSplit;
-import com.facebook.presto.TaskSource;
+import com.facebook.presto.block.BlockEncodingManager;
 import com.facebook.presto.connector.ConnectorId;
-import com.facebook.presto.cost.CoefficientBasedStatsCalculator;
-import com.facebook.presto.execution.TestSqlTaskManager.MockExchangeClientSupplier;
+import com.facebook.presto.cost.StatsAndCosts;
+import com.facebook.presto.event.SplitMonitor;
+import com.facebook.presto.eventlistener.EventListenerManager;
+import com.facebook.presto.execution.buffer.OutputBuffers;
 import com.facebook.presto.execution.scheduler.LegacyNetworkTopology;
 import com.facebook.presto.execution.scheduler.NodeScheduler;
 import com.facebook.presto.execution.scheduler.NodeSchedulerConfig;
@@ -29,20 +29,20 @@ import com.facebook.presto.metadata.Split;
 import com.facebook.presto.metadata.TableHandle;
 import com.facebook.presto.operator.LookupJoinOperators;
 import com.facebook.presto.operator.PagesIndex;
+import com.facebook.presto.operator.StageExecutionDescriptor;
 import com.facebook.presto.operator.index.IndexJoinLookupStats;
-import com.facebook.presto.spi.block.TestingBlockEncodingSerde;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
-import com.facebook.presto.spi.predicate.TupleDomain;
 import com.facebook.presto.spi.type.TestingTypeManager;
 import com.facebook.presto.spiller.GenericSpillerFactory;
 import com.facebook.presto.split.PageSinkManager;
 import com.facebook.presto.split.PageSourceManager;
+import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.facebook.presto.sql.gen.ExpressionCompiler;
 import com.facebook.presto.sql.gen.JoinCompiler;
 import com.facebook.presto.sql.gen.JoinFilterFunctionCompiler;
+import com.facebook.presto.sql.gen.OrderingCompiler;
 import com.facebook.presto.sql.gen.PageFunctionCompiler;
 import com.facebook.presto.sql.parser.SqlParser;
-import com.facebook.presto.sql.planner.CompilerConfig;
 import com.facebook.presto.sql.planner.LocalExecutionPlanner;
 import com.facebook.presto.sql.planner.NodePartitioningManager;
 import com.facebook.presto.sql.planner.Partitioning;
@@ -59,12 +59,13 @@ import com.facebook.presto.testing.TestingTransactionHandle;
 import com.facebook.presto.util.FinalizerService;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.airlift.json.ObjectMapperProvider;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalInt;
 
 import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
-import static com.facebook.presto.operator.PipelineExecutionStrategy.UNGROUPED_EXECUTION;
 import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.SINGLE_DISTRIBUTION;
@@ -89,21 +90,21 @@ public final class TaskTestUtils
     public static final Symbol SYMBOL = new Symbol("column");
 
     public static final PlanFragment PLAN_FRAGMENT = new PlanFragment(
-            new PlanFragmentId("fragment"),
+            new PlanFragmentId(0),
             new TableScanNode(
                     TABLE_SCAN_NODE_ID,
-                    new TableHandle(CONNECTOR_ID, new TestingTableHandle()),
+                    new TableHandle(CONNECTOR_ID, new TestingTableHandle(), TRANSACTION_HANDLE, Optional.empty()),
                     ImmutableList.of(SYMBOL),
-                    ImmutableMap.of(SYMBOL, new TestingColumnHandle("column", 0, BIGINT)),
-                    Optional.empty(),
-                    TupleDomain.all(),
-                    null),
+                    ImmutableMap.of(SYMBOL, new TestingColumnHandle("column", 0, BIGINT))),
             ImmutableMap.of(SYMBOL, VARCHAR),
             SOURCE_DISTRIBUTION,
             ImmutableList.of(TABLE_SCAN_NODE_ID),
             new PartitioningScheme(Partitioning.create(SINGLE_DISTRIBUTION, ImmutableList.of()), ImmutableList.of(SYMBOL))
                     .withBucketToPartition(Optional.of(new int[1])),
-            UNGROUPED_EXECUTION);
+            StageExecutionDescriptor.ungroupedExecution(),
+            false,
+            StatsAndCosts.empty(),
+            Optional.empty());
 
     public static LocalExecutionPlanner createTestingPlanner()
     {
@@ -126,18 +127,15 @@ public final class TaskTestUtils
         return new LocalExecutionPlanner(
                 metadata,
                 new SqlParser(),
-                new CoefficientBasedStatsCalculator(metadata),
                 Optional.empty(),
                 pageSourceManager,
                 new IndexManager(),
                 nodePartitioningManager,
                 new PageSinkManager(),
-                new MockExchangeClientSupplier(),
                 new ExpressionCompiler(metadata, pageFunctionCompiler),
                 pageFunctionCompiler,
                 new JoinFilterFunctionCompiler(metadata),
                 new IndexJoinLookupStats(),
-                new CompilerConfig(),
                 new TaskManagerConfig(),
                 new GenericSpillerFactory((types, spillContext, memoryContext) -> {
                     throw new UnsupportedOperationException();
@@ -148,14 +146,22 @@ public final class TaskTestUtils
                 (types, partitionFunction, spillContext, memoryContext) -> {
                     throw new UnsupportedOperationException();
                 },
-                new TestingBlockEncodingSerde(new TestingTypeManager()),
+                new BlockEncodingManager(new TestingTypeManager()),
                 new PagesIndex.TestingFactory(false),
-                new JoinCompiler(),
-                new LookupJoinOperators());
+                new JoinCompiler(MetadataManager.createTestMetadataManager(), new FeaturesConfig()),
+                new LookupJoinOperators(),
+                new OrderingCompiler());
     }
 
     public static TaskInfo updateTask(SqlTask sqlTask, List<TaskSource> taskSources, OutputBuffers outputBuffers)
     {
-        return sqlTask.updateTask(TEST_SESSION, Optional.of(PLAN_FRAGMENT), taskSources, outputBuffers);
+        return sqlTask.updateTask(TEST_SESSION, Optional.of(PLAN_FRAGMENT), taskSources, outputBuffers, OptionalInt.empty());
+    }
+
+    public static SplitMonitor createTestSplitMonitor()
+    {
+        return new SplitMonitor(
+                new EventListenerManager(),
+                new ObjectMapperProvider().get());
     }
 }

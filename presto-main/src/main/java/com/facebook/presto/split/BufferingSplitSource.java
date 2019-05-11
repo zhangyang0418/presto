@@ -24,9 +24,9 @@ import com.google.common.util.concurrent.ListenableFuture;
 import java.util.ArrayList;
 import java.util.List;
 
-import static com.facebook.presto.spi.connector.NotPartitionedPartitionHandle.NOT_PARTITIONED;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
+import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static java.util.Objects.requireNonNull;
 
 public class BufferingSplitSource
@@ -54,17 +54,16 @@ public class BufferingSplitSource
     }
 
     @Override
-    public ListenableFuture<List<Split>> getNextBatch(int maxSize)
-    {
-        checkArgument(maxSize > 0, "Cannot fetch a batch of zero size");
-        return Futures.transform(getNextBatch(NOT_PARTITIONED, Lifespan.taskWide(), maxSize), SplitBatch::getSplits);
-    }
-
-    @Override
     public ListenableFuture<SplitBatch> getNextBatch(ConnectorPartitionHandle partitionHandle, Lifespan lifespan, int maxSize)
     {
         checkArgument(maxSize > 0, "Cannot fetch a batch of zero size");
         return GetNextBatch.fetchNextBatchAsync(source, Math.min(bufferSize, maxSize), maxSize, partitionHandle, lifespan);
+    }
+
+    @Override
+    public void rewind(ConnectorPartitionHandle partitionHandle)
+    {
+        source.rewind(partitionHandle);
     }
 
     @Override
@@ -99,7 +98,7 @@ public class BufferingSplitSource
         {
             GetNextBatch getNextBatch = new GetNextBatch(splitSource, min, max, partitionHandle, lifespan);
             ListenableFuture<?> future = getNextBatch.fetchSplits();
-            return Futures.transform(future, ignored -> new SplitBatch(getNextBatch.splits, getNextBatch.noMoreSplits));
+            return Futures.transform(future, ignored -> new SplitBatch(getNextBatch.splits, getNextBatch.noMoreSplits), directExecutor());
         }
 
         private GetNextBatch(SplitSource splitSource, int min, int max, ConnectorPartitionHandle partitionHandle, Lifespan lifespan)
@@ -125,7 +124,7 @@ public class BufferingSplitSource
                     return immediateFuture(null);
                 }
                 return fetchSplits();
-            });
+            }, directExecutor());
         }
     }
 }

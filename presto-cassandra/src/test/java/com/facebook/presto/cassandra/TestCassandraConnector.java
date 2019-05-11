@@ -16,6 +16,7 @@ package com.facebook.presto.cassandra;
 import com.datastax.driver.core.utils.Bytes;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
+import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.ConnectorSplitSource;
 import com.facebook.presto.spi.ConnectorTableHandle;
@@ -34,6 +35,7 @@ import com.facebook.presto.spi.connector.ConnectorSplitManager;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.testing.TestingConnectorContext;
+import com.facebook.presto.testing.TestingConnectorSession;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.AfterMethod;
@@ -48,15 +50,16 @@ import java.util.Optional;
 import static com.facebook.presto.cassandra.CassandraTestingUtils.TABLE_ALL_TYPES;
 import static com.facebook.presto.cassandra.CassandraTestingUtils.createTestTables;
 import static com.facebook.presto.spi.connector.ConnectorSplitManager.SplitSchedulingStrategy.UNGROUPED_SCHEDULING;
+import static com.facebook.presto.spi.connector.NotPartitionedPartitionHandle.NOT_PARTITIONED;
 import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
 import static com.facebook.presto.spi.type.IntegerType.INTEGER;
 import static com.facebook.presto.spi.type.RealType.REAL;
+import static com.facebook.presto.spi.type.TimeZoneKey.UTC_KEY;
 import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
 import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.spi.type.Varchars.isVarcharType;
-import static com.facebook.presto.testing.TestingConnectorSession.SESSION;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.airlift.concurrent.MoreFutures.getFutureValue;
@@ -72,6 +75,16 @@ public class TestCassandraConnector
 {
     protected static final String INVALID_DATABASE = "totally_invalid_database";
     private static final Date DATE = new Date();
+    private static final ConnectorSession SESSION = new TestingConnectorSession(
+            "user",
+            Optional.of("test"),
+            Optional.empty(),
+            UTC_KEY,
+            ENGLISH,
+            System.currentTimeMillis(),
+            new CassandraSessionProperties(new CassandraClientConfig()).getSessionProperties(),
+            ImmutableMap.of(),
+            true);
     protected String database;
     protected SchemaTableName table;
     protected SchemaTableName tableUnpartitioned;
@@ -107,7 +120,7 @@ public class TestCassandraConnector
         assertInstanceOf(recordSetProvider, CassandraRecordSetProvider.class);
 
         database = keyspace;
-        table = new SchemaTableName(database, TABLE_ALL_TYPES.toLowerCase());
+        table = new SchemaTableName(database, TABLE_ALL_TYPES.toLowerCase(ENGLISH));
         tableUnpartitioned = new SchemaTableName(database, "presto_test_unpartitioned");
         invalidTable = new SchemaTableName(database, "totally_invalid_table_name");
     }
@@ -257,7 +270,7 @@ public class TestCassandraConnector
     {
         ImmutableList.Builder<ConnectorSplit> splits = ImmutableList.builder();
         while (!splitSource.isFinished()) {
-            splits.addAll(getFutureValue(splitSource.getNextBatch(1000)));
+            splits.addAll(getFutureValue(splitSource.getNextBatch(NOT_PARTITIONED, 1000)).getSplits());
         }
         return splits.build();
     }

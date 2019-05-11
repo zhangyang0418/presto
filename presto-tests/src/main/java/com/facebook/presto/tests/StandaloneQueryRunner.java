@@ -17,12 +17,14 @@ import com.facebook.presto.Session;
 import com.facebook.presto.connector.ConnectorId;
 import com.facebook.presto.cost.StatsCalculator;
 import com.facebook.presto.metadata.AllNodes;
+import com.facebook.presto.metadata.InternalNode;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.QualifiedObjectName;
 import com.facebook.presto.metadata.SessionPropertyManager;
 import com.facebook.presto.server.testing.TestingPrestoServer;
-import com.facebook.presto.spi.Node;
 import com.facebook.presto.spi.Plugin;
+import com.facebook.presto.split.PageSourceManager;
+import com.facebook.presto.split.SplitManager;
 import com.facebook.presto.sql.parser.SqlParserOptions;
 import com.facebook.presto.sql.planner.NodePartitioningManager;
 import com.facebook.presto.testing.MaterializedResult;
@@ -135,6 +137,18 @@ public final class StandaloneQueryRunner
     }
 
     @Override
+    public SplitManager getSplitManager()
+    {
+        return server.getSplitManager();
+    }
+
+    @Override
+    public PageSourceManager getPageSourceManager()
+    {
+        return server.getPageSourceManager();
+    }
+
+    @Override
     public NodePartitioningManager getNodePartitioningManager()
     {
         return server.getNodePartitioningManager();
@@ -176,7 +190,7 @@ public final class StandaloneQueryRunner
 
     private void refreshNodes(ConnectorId connectorId)
     {
-        Set<Node> activeNodesWithConnector;
+        Set<InternalNode> activeNodesWithConnector;
 
         do {
             try {
@@ -244,7 +258,6 @@ public final class StandaloneQueryRunner
         ImmutableMap.Builder<String, String> properties = ImmutableMap.<String, String>builder()
                 .put("query.client.timeout", "10m")
                 .put("exchange.http-client.idle-timeout", "1h")
-                .put("compiler.interpreter-enabled", "false")
                 .put("node-scheduler.min-candidates", "1")
                 .put("datasources", "system");
 

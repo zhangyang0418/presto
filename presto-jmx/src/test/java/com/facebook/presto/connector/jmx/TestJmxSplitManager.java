@@ -14,7 +14,7 @@
 package com.facebook.presto.connector.jmx;
 
 import com.facebook.presto.client.NodeVersion;
-import com.facebook.presto.metadata.PrestoNode;
+import com.facebook.presto.metadata.InternalNode;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.ConnectorSplitSource;
@@ -48,6 +48,7 @@ import java.util.concurrent.TimeUnit;
 import static com.facebook.presto.connector.jmx.JmxMetadata.HISTORY_SCHEMA_NAME;
 import static com.facebook.presto.connector.jmx.JmxMetadata.JMX_SCHEMA_NAME;
 import static com.facebook.presto.spi.connector.ConnectorSplitManager.SplitSchedulingStrategy.UNGROUPED_SCHEDULING;
+import static com.facebook.presto.spi.connector.NotPartitionedPartitionHandle.NOT_PARTITIONED;
 import static com.facebook.presto.spi.type.VarcharType.createUnboundedVarcharType;
 import static com.facebook.presto.testing.TestingConnectorSession.SESSION;
 import static io.airlift.slice.Slices.utf8Slice;
@@ -84,7 +85,7 @@ public class TestJmxSplitManager
                             });
 
     private final JmxColumnHandle columnHandle = new JmxColumnHandle("node", createUnboundedVarcharType());
-    private final JmxTableHandle tableHandle = new JmxTableHandle("objectName", ImmutableList.of(columnHandle), true);
+    private final JmxTableHandle tableHandle = new JmxTableHandle(new SchemaTableName("schema", "tableName"), ImmutableList.of("objectName"), ImmutableList.of(columnHandle), true);
 
     private final JmxSplitManager splitManager = jmxConnector.getSplitManager();
     private final JmxMetadata metadata = jmxConnector.getMetadata(new ConnectorTransactionHandle() {});
@@ -209,14 +210,13 @@ public class TestJmxSplitManager
     {
         ImmutableList.Builder<ConnectorSplit> splits = ImmutableList.builder();
         while (!splitSource.isFinished()) {
-            List<ConnectorSplit> batch = splitSource.getNextBatch(1000).get();
-            splits.addAll(batch);
+            splits.addAll(splitSource.getNextBatch(NOT_PARTITIONED, 1000).get().getSplits());
         }
         return splits.build();
     }
 
     private static Node createTestingNode(String hostname)
     {
-        return new PrestoNode(hostname, URI.create(format("http://%s:8080", hostname)), NodeVersion.UNKNOWN, false);
+        return new InternalNode(hostname, URI.create(format("http://%s:8080", hostname)), NodeVersion.UNKNOWN, false);
     }
 }

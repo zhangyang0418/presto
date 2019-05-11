@@ -13,15 +13,24 @@
  */
 package com.facebook.presto.plugin.jdbc;
 
+import com.facebook.presto.spi.ColumnMetadata;
+import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.SchemaTableName;
+import com.facebook.presto.spi.type.BigintType;
+import com.facebook.presto.spi.type.DateType;
+import com.facebook.presto.spi.type.DoubleType;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
+import java.util.List;
+
 import static com.facebook.presto.plugin.jdbc.TestingDatabase.CONNECTOR_ID;
 import static com.facebook.presto.plugin.jdbc.TestingJdbcTypeHandle.JDBC_BIGINT;
+import static com.facebook.presto.plugin.jdbc.TestingJdbcTypeHandle.JDBC_DATE;
 import static com.facebook.presto.plugin.jdbc.TestingJdbcTypeHandle.JDBC_DOUBLE;
 import static com.facebook.presto.plugin.jdbc.TestingJdbcTypeHandle.JDBC_REAL;
 import static com.facebook.presto.plugin.jdbc.TestingJdbcTypeHandle.JDBC_VARCHAR;
@@ -30,7 +39,10 @@ import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
 import static com.facebook.presto.spi.type.RealType.REAL;
 import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.facebook.presto.spi.type.VarcharType.createVarcharType;
+import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
+import static java.util.Collections.emptyMap;
 import static java.util.Locale.ENGLISH;
+import static java.util.UUID.randomUUID;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertTrue;
@@ -38,6 +50,8 @@ import static org.testng.Assert.assertTrue;
 @Test
 public class TestJdbcClient
 {
+    private static final ConnectorSession session = testSessionBuilder().build().toConnectorSession();
+
     private TestingDatabase database;
     private String catalogName;
     private JdbcClient jdbcClient;
@@ -77,10 +91,10 @@ public class TestJdbcClient
         assertEquals(table.getSchemaName(), "EXAMPLE");
         assertEquals(table.getTableName(), "NUMBERS");
         assertEquals(table.getSchemaTableName(), schemaTableName);
-        assertEquals(jdbcClient.getColumns(table), ImmutableList.of(
-                new JdbcColumnHandle(CONNECTOR_ID, "TEXT", JDBC_VARCHAR, VARCHAR),
-                new JdbcColumnHandle(CONNECTOR_ID, "TEXT_SHORT", JDBC_VARCHAR, createVarcharType(32)),
-                new JdbcColumnHandle(CONNECTOR_ID, "VALUE", JDBC_BIGINT, BIGINT)));
+        assertEquals(jdbcClient.getColumns(session, table), ImmutableList.of(
+                new JdbcColumnHandle(CONNECTOR_ID, "TEXT", JDBC_VARCHAR, VARCHAR, true),
+                new JdbcColumnHandle(CONNECTOR_ID, "TEXT_SHORT", JDBC_VARCHAR, createVarcharType(32), true),
+                new JdbcColumnHandle(CONNECTOR_ID, "VALUE", JDBC_BIGINT, BIGINT, true)));
     }
 
     @Test
@@ -89,9 +103,9 @@ public class TestJdbcClient
         SchemaTableName schemaTableName = new SchemaTableName("exa_ple", "num_ers");
         JdbcTableHandle table = jdbcClient.getTableHandle(schemaTableName);
         assertNotNull(table, "table is null");
-        assertEquals(jdbcClient.getColumns(table), ImmutableList.of(
-                new JdbcColumnHandle(CONNECTOR_ID, "TE_T", JDBC_VARCHAR, VARCHAR),
-                new JdbcColumnHandle(CONNECTOR_ID, "VA%UE", JDBC_BIGINT, BIGINT)));
+        assertEquals(jdbcClient.getColumns(session, table), ImmutableList.of(
+                new JdbcColumnHandle(CONNECTOR_ID, "TE_T", JDBC_VARCHAR, VARCHAR, true),
+                new JdbcColumnHandle(CONNECTOR_ID, "VA%UE", JDBC_BIGINT, BIGINT, true)));
     }
 
     @Test
@@ -100,10 +114,69 @@ public class TestJdbcClient
         SchemaTableName schemaTableName = new SchemaTableName("exa_ple", "table_with_float_col");
         JdbcTableHandle table = jdbcClient.getTableHandle(schemaTableName);
         assertNotNull(table, "table is null");
-        assertEquals(jdbcClient.getColumns(table), ImmutableList.of(
-                new JdbcColumnHandle(CONNECTOR_ID, "COL1", JDBC_BIGINT, BIGINT),
-                new JdbcColumnHandle(CONNECTOR_ID, "COL2", JDBC_DOUBLE, DOUBLE),
-                new JdbcColumnHandle(CONNECTOR_ID, "COL3", JDBC_DOUBLE, DOUBLE),
-                new JdbcColumnHandle(CONNECTOR_ID, "COL4", JDBC_REAL, REAL)));
+        assertEquals(jdbcClient.getColumns(session, table), ImmutableList.of(
+                new JdbcColumnHandle(CONNECTOR_ID, "COL1", JDBC_BIGINT, BIGINT, true),
+                new JdbcColumnHandle(CONNECTOR_ID, "COL2", JDBC_DOUBLE, DOUBLE, true),
+                new JdbcColumnHandle(CONNECTOR_ID, "COL3", JDBC_DOUBLE, DOUBLE, true),
+                new JdbcColumnHandle(CONNECTOR_ID, "COL4", JDBC_REAL, REAL, true)));
+    }
+
+    @Test
+    public void testCreateWithNullableColumns()
+    {
+        String tableName = randomUUID().toString().toUpperCase(ENGLISH);
+        SchemaTableName schemaTableName = new SchemaTableName("schema_for_create_table_tests", tableName);
+        List<ColumnMetadata> expectedColumns = ImmutableList.of(
+                new ColumnMetadata("columnA", BigintType.BIGINT, null, null, false),
+                new ColumnMetadata("columnB", BigintType.BIGINT, true, null, null, false, emptyMap()),
+                new ColumnMetadata("columnC", BigintType.BIGINT, false, null, null, false, emptyMap()),
+                new ColumnMetadata("columnD", DateType.DATE, false, null, null, false, emptyMap()));
+
+        jdbcClient.createTable(new ConnectorTableMetadata(schemaTableName, expectedColumns));
+
+        JdbcTableHandle tableHandle = jdbcClient.getTableHandle(schemaTableName);
+
+        try {
+            assertEquals(tableHandle.getTableName(), tableName);
+            assertEquals(jdbcClient.getColumns(session, tableHandle), ImmutableList.of(
+                    new JdbcColumnHandle(CONNECTOR_ID, "COLUMNA", JDBC_BIGINT, BigintType.BIGINT, true),
+                    new JdbcColumnHandle(CONNECTOR_ID, "COLUMNB", JDBC_BIGINT, BigintType.BIGINT, true),
+                    new JdbcColumnHandle(CONNECTOR_ID, "COLUMNC", JDBC_BIGINT, BigintType.BIGINT, false),
+                    new JdbcColumnHandle(CONNECTOR_ID, "COLUMND", JDBC_DATE, DateType.DATE, false)));
+        }
+        finally {
+            jdbcClient.dropTable(tableHandle);
+        }
+    }
+
+    @Test
+    public void testAlterColumns()
+    {
+        String tableName = randomUUID().toString().toUpperCase(ENGLISH);
+        SchemaTableName schemaTableName = new SchemaTableName("schema_for_create_table_tests", tableName);
+        List<ColumnMetadata> expectedColumns = ImmutableList.of(
+                new ColumnMetadata("columnA", BigintType.BIGINT, null, null, false));
+
+        jdbcClient.createTable(new ConnectorTableMetadata(schemaTableName, expectedColumns));
+
+        JdbcTableHandle tableHandle = jdbcClient.getTableHandle(schemaTableName);
+
+        try {
+            assertEquals(tableHandle.getTableName(), tableName);
+            assertEquals(jdbcClient.getColumns(session, tableHandle), ImmutableList.of(
+                    new JdbcColumnHandle(CONNECTOR_ID, "COLUMNA", JDBC_BIGINT, BigintType.BIGINT, true)));
+
+            jdbcClient.addColumn(tableHandle, new ColumnMetadata("columnB", DoubleType.DOUBLE, null, null, false));
+            assertEquals(jdbcClient.getColumns(session, tableHandle), ImmutableList.of(
+                    new JdbcColumnHandle(CONNECTOR_ID, "COLUMNA", JDBC_BIGINT, BigintType.BIGINT, true),
+                    new JdbcColumnHandle(CONNECTOR_ID, "COLUMNB", JDBC_DOUBLE, DoubleType.DOUBLE, true)));
+
+            jdbcClient.dropColumn(tableHandle, new JdbcColumnHandle(CONNECTOR_ID, "COLUMNB", JDBC_BIGINT, BigintType.BIGINT, true));
+            assertEquals(jdbcClient.getColumns(session, tableHandle), ImmutableList.of(
+                    new JdbcColumnHandle(CONNECTOR_ID, "COLUMNA", JDBC_BIGINT, BigintType.BIGINT, true)));
+        }
+        finally {
+            jdbcClient.dropTable(tableHandle);
+        }
     }
 }

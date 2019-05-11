@@ -13,20 +13,24 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.presto.PagesIndexPageSorter;
 import com.facebook.presto.block.BlockEncodingManager;
 import com.facebook.presto.hive.authentication.NoHdfsAuthentication;
 import com.facebook.presto.hive.orc.DwrfPageSourceFactory;
 import com.facebook.presto.hive.orc.OrcPageSourceFactory;
 import com.facebook.presto.hive.parquet.ParquetPageSourceFactory;
-import com.facebook.presto.hive.parquet.ParquetRecordCursorProvider;
 import com.facebook.presto.hive.rcfile.RcFilePageSourceFactory;
 import com.facebook.presto.hive.s3.HiveS3Config;
 import com.facebook.presto.hive.s3.PrestoS3ConfigurationUpdater;
-import com.facebook.presto.hive.s3.S3ConfigurationUpdater;
-import com.facebook.presto.metadata.FunctionRegistry;
+import com.facebook.presto.metadata.FunctionManager;
+import com.facebook.presto.operator.PagesIndex;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.spi.PageSorter;
+import com.facebook.presto.spi.type.ArrayType;
 import com.facebook.presto.spi.type.MapType;
+import com.facebook.presto.spi.type.NamedTypeSignature;
+import com.facebook.presto.spi.type.RowType;
 import com.facebook.presto.spi.type.StandardTypes;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.spi.type.TypeSignatureParameter;
@@ -35,9 +39,14 @@ import com.facebook.presto.testing.TestingConnectorSession;
 import com.facebook.presto.type.TypeRegistry;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import io.airlift.slice.Slice;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Set;
+
+import static com.facebook.presto.spi.type.Decimals.encodeScaledValue;
+import static java.util.stream.Collectors.toList;
 
 public final class HiveTestUtils
 {
@@ -46,16 +55,18 @@ public final class HiveTestUtils
     }
 
     public static final ConnectorSession SESSION = new TestingConnectorSession(
-            new HiveSessionProperties(new HiveClientConfig()).getSessionProperties());
+            new HiveSessionProperties(new HiveClientConfig(), new OrcFileWriterConfig(), new ParquetFileWriterConfig()).getSessionProperties());
 
     public static final TypeRegistry TYPE_MANAGER = new TypeRegistry();
 
     static {
-        // associate TYPE_MANAGER with a function registry
-        new FunctionRegistry(TYPE_MANAGER, new BlockEncodingManager(TYPE_MANAGER), new FeaturesConfig());
+        // associate TYPE_MANAGER with a function manager
+        new FunctionManager(TYPE_MANAGER, new BlockEncodingManager(TYPE_MANAGER), new FeaturesConfig());
     }
 
     public static final HdfsEnvironment HDFS_ENVIRONMENT = createTestHdfsEnvironment(new HiveClientConfig());
+
+    public static final PageSorter PAGE_SORTER = new PagesIndexPageSorter(new PagesIndex.TestingFactory(false));
 
     public static Set<HivePageSourceFactory> getDefaultHiveDataStreamFactories(HiveClientConfig hiveClientConfig)
     {
@@ -65,7 +76,7 @@ public final class HiveTestUtils
                 .add(new RcFilePageSourceFactory(TYPE_MANAGER, testHdfsEnvironment, stats))
                 .add(new OrcPageSourceFactory(TYPE_MANAGER, hiveClientConfig, testHdfsEnvironment, stats))
                 .add(new DwrfPageSourceFactory(TYPE_MANAGER, testHdfsEnvironment, stats))
-                .add(new ParquetPageSourceFactory(TYPE_MANAGER, hiveClientConfig, testHdfsEnvironment))
+                .add(new ParquetPageSourceFactory(TYPE_MANAGER, testHdfsEnvironment, stats))
                 .build();
     }
 
@@ -73,7 +84,6 @@ public final class HiveTestUtils
     {
         HdfsEnvironment testHdfsEnvironment = createTestHdfsEnvironment(hiveClientConfig);
         return ImmutableSet.<HiveRecordCursorProvider>builder()
-                .add(new ParquetRecordCursorProvider(hiveClientConfig, testHdfsEnvironment))
                 .add(new GenericHiveRecordCursorProvider(testHdfsEnvironment))
                 .build();
     }
@@ -83,14 +93,20 @@ public final class HiveTestUtils
         HdfsEnvironment testHdfsEnvironment = createTestHdfsEnvironment(hiveClientConfig);
         return ImmutableSet.<HiveFileWriterFactory>builder()
                 .add(new RcFileFileWriterFactory(testHdfsEnvironment, TYPE_MANAGER, new NodeVersion("test_version"), hiveClientConfig, new FileFormatDataSourceStats()))
-                .add(new OrcFileWriterFactory(
-                        testHdfsEnvironment,
-                        TYPE_MANAGER,
-                        new NodeVersion("test_version"),
-                        hiveClientConfig,
-                        new FileFormatDataSourceStats(),
-                        new OrcFileWriterConfig()))
+                .add(getDefaultOrcFileWriterFactory(hiveClientConfig))
                 .build();
+    }
+
+    public static OrcFileWriterFactory getDefaultOrcFileWriterFactory(HiveClientConfig hiveClientConfig)
+    {
+        HdfsEnvironment testHdfsEnvironment = createTestHdfsEnvironment(hiveClientConfig);
+        return new OrcFileWriterFactory(
+                testHdfsEnvironment,
+                TYPE_MANAGER,
+                new NodeVersion("test_version"),
+                hiveClientConfig,
+                new FileFormatDataSourceStats(),
+                new OrcFileWriterConfig());
     }
 
     public static List<Type> getTypes(List<? extends ColumnHandle> columnHandles)
@@ -104,13 +120,8 @@ public final class HiveTestUtils
 
     public static HdfsEnvironment createTestHdfsEnvironment(HiveClientConfig config)
     {
-        return createTestHdfsEnvironment(config, new PrestoS3ConfigurationUpdater(new HiveS3Config()));
-    }
-
-    public static HdfsEnvironment createTestHdfsEnvironment(HiveClientConfig hiveConfig, S3ConfigurationUpdater s3Config)
-    {
-        HdfsConfiguration hdfsConfig = new HiveHdfsConfiguration(new HdfsConfigurationUpdater(hiveConfig, s3Config));
-        return new HdfsEnvironment(hdfsConfig, hiveConfig, new NoHdfsAuthentication());
+        HdfsConfiguration hdfsConfig = new HiveHdfsConfiguration(new HdfsConfigurationUpdater(config, new PrestoS3ConfigurationUpdater(new HiveS3Config())));
+        return new HdfsEnvironment(hdfsConfig, config, new NoHdfsAuthentication());
     }
 
     public static MapType mapType(Type keyType, Type valueType)
@@ -118,5 +129,31 @@ public final class HiveTestUtils
         return (MapType) TYPE_MANAGER.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
                 TypeSignatureParameter.of(keyType.getTypeSignature()),
                 TypeSignatureParameter.of(valueType.getTypeSignature())));
+    }
+
+    public static ArrayType arrayType(Type elementType)
+    {
+        return (ArrayType) TYPE_MANAGER.getParameterizedType(
+                StandardTypes.ARRAY,
+                ImmutableList.of(TypeSignatureParameter.of(elementType.getTypeSignature())));
+    }
+
+    public static RowType rowType(List<NamedTypeSignature> elementTypeSignatures)
+    {
+        return (RowType) TYPE_MANAGER.getParameterizedType(
+                StandardTypes.ROW,
+                ImmutableList.copyOf(elementTypeSignatures.stream()
+                        .map(TypeSignatureParameter::of)
+                        .collect(toList())));
+    }
+
+    public static Long shortDecimal(String value)
+    {
+        return new BigDecimal(value).unscaledValue().longValueExact();
+    }
+
+    public static Slice longDecimal(String value)
+    {
+        return encodeScaledValue(new BigDecimal(value));
     }
 }
